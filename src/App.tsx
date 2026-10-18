@@ -38,6 +38,7 @@ import {
   List,
   RotateCcw,
   Car,
+  AlertCircle,
 } from 'lucide-react';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import {
@@ -70,25 +71,33 @@ import {
   ParticipantRecord,
   SortOption,
 } from './types';
-import { INITIAL_HOUSES, INITIAL_PARTICIPANTS } from './data/initialData';
+import { INITIAL_HOUSES } from './data/initialData';
 import { HouseIllustration } from './components/HouseIllustration';
 import { LeafletMap } from './components/LeafletMap';
 import { AddHouseModal, HouseFormData } from './components/AddHouseModal';
-import { LoginPage } from './components/LoginPage';
+import { DirectMemberSession, LoginPage } from './components/LoginPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 const STORAGE_KEY_HOUSES = 'kopgroep27_houses_v2';
-const STORAGE_KEY_PARTICIPANTS = 'kopgroep27_participants_v1';
 const STORAGE_KEY_CYCLISTS = 'kopgroep27_cyclists_v1';
 const STORAGE_KEY_USERNAME = 'kopgroep27_username_v1';
-const STORAGE_KEY_MIGRATED = 'kopgroep27_cloud_migrated_v2';
+const STORAGE_KEY_DIRECT_SESSION = 'kopgroep27_member_session_v1';
+const STORAGE_KEY_RESCUED = 'kopgroep27_server_rescued_v1';
 
 const DEMO_HOUSE_IDS = new Set(INITIAL_HOUSES.map((h) => h.id));
-const DEMO_PARTICIPANT_IDS = new Set(INITIAL_PARTICIPANTS.map((p) => p.id));
 
 function MainApplication() {
-  // User & Auth state
+  // User & Auth state (supports both Firebase OAuth and Direct Group Member Login)
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [directSession, setDirectSession] = useState<DirectMemberSession | null>(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_DIRECT_SESSION);
+      if (raw) return JSON.parse(raw);
+    } catch {
+      // Ignore parse error
+    }
+    return null;
+  });
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [friendName, setFriendName] = useState<string>(() => {
     return localStorage.getItem(STORAGE_KEY_USERNAME) || '';
@@ -103,7 +112,12 @@ function MainApplication() {
   // Undo last deleted house
   const [lastDeletedHouse, setLastDeletedHouse] = useState<HouseRecord | null>(null);
 
-  // Central Cloud Firestore state (Single Source of Truth for everyone in the group)
+  // Central Server State (Single Source of Truth shared by everyone on the site)
+  const [serverHouses, setServerHouses] = useState<HouseRecord[] | null>(null);
+  const [serverIdeas, setServerIdeas] = useState<GeneralIdeaRecord[]>([]);
+  const [serverParticipants, setServerParticipants] = useState<ParticipantRecord[]>([]);
+
+  // Optional Firestore state when signed in via Firebase Auth
   const [cloudHouses, setCloudHouses] = useState<HouseRecord[] | null>(null);
   const [cloudVotesByHouse, setCloudVotesByHouse] = useState<Record<string, HouseVoteRecord[]>>({});
   const [cloudCommentsByHouse, setCloudCommentsByHouse] = useState<Record<string, HouseCommentRecord[]>>({});
@@ -176,7 +190,131 @@ function MainApplication() {
     return () => unsub();
   }, []);
 
-  // Attach Firestore listeners when authenticated
+  const handleDirectLogin = (session: DirectMemberSession) => {
+    setDirectSession(session);
+    setFriendName(session.name);
+    localStorage.setItem(STORAGE_KEY_DIRECT_SESSION, JSON.stringify(session));
+    localStorage.setItem(STORAGE_KEY_USERNAME, session.name);
+  };
+
+  const handleLogoutAll = async () => {
+    setDirectSession(null);
+    localStorage.removeItem(STORAGE_KEY_DIRECT_SESSION);
+    if (currentUser) {
+      await logOutUser();
+    }
+  };
+
+  const isAuthenticated = Boolean(currentUser || directSession);
+  const activeUserId = currentUser?.uid || directSession?.uid || 'group-member';
+  const activeUserEmail = currentUser?.email || directSession?.email || friendName;
+
+  // Fetch & poll Central Server State (/api/group-state) so everyone (you, Erik, etc.) sees the exact same list!
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let isMounted = true;
+
+    const fetchAndRescueServerState = async () => {
+      try {
+        // First time: if the user had custom houses in localStorage (after deleting the 4 default houses),
+        // rescue those custom houses to the central server so they are never lost!
+        if (localStorage.getItem(STORAGE_KEY_RESCUED) !== 'done') {
+          localStorage.setItem(STORAGE_KEY_RESCUED, 'done');
+          const rawLocal = localStorage.getItem(STORAGE_KEY_HOUSES);
+          if (rawLocal) {
+            try {
+              const parsed: HouseRecord[] = JSON.parse(rawLocal);
+              if (Array.isArray(parsed)) {
+                const customHouses = parsed.filter((h) => h && h.id && !DEMO_HOUSE_IDS.has(h.id));
+                if (customHouses.length > 0) {
+                  const rescueRes = await fetch('/api/group-state/rescue-custom', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ customHouses }),
+                  });
+                  if (rescueRes.ok) {
+                    const data = await rescueRes.json();
+                    if (isMounted) {
+                      setServerHouses(Array.isArray(data.houses) ? data.houses : []);
+                      setServerParticipants(Array.isArray(data.participants) ? data.participants : []);
+                      setServerIdeas(Array.isArray(data.ideas) ? data.ideas : []);
+                    }
+                    return;
+                  }
+                }
+              }
+            } catch {
+              // Ignore localStorage parse error
+            }
+          }
+        }
+
+        const res = await fetch('/api/group-state');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (isMounted) {
+          setServerHouses(Array.isArray(data.houses) ? data.houses : []);
+          setServerParticipants(Array.isArray(data.participants) ? data.participants : []);
+          setServerIdeas(Array.isArray(data.ideas) ? data.ideas : []);
+        }
+      } catch {
+        // Fallback to empty array if offline
+        if (isMounted && serverHouses === null) {
+          setServerHouses([]);
+        }
+      }
+    };
+
+    fetchAndRescueServerState();
+    const interval = window.setInterval(fetchAndRescueServerState, 3500);
+    return () => {
+      isMounted = false;
+      window.clearInterval(interval);
+    };
+  }, [isAuthenticated]);
+
+  // Helper to push updated houses/participants/ideas to central server API
+  const pushHousesToServer = async (nextHouses: HouseRecord[]) => {
+    setServerHouses(nextHouses);
+    try {
+      await fetch('/api/group-state/houses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ houses: nextHouses }),
+      });
+    } catch {
+      // Ignore network error
+    }
+  };
+
+  const pushParticipantsToServer = async (nextParticipants: ParticipantRecord[]) => {
+    setServerParticipants(nextParticipants);
+    try {
+      await fetch('/api/group-state/participants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ participants: nextParticipants }),
+      });
+    } catch {
+      // Ignore network error
+    }
+  };
+
+  const pushIdeasToServer = async (nextIdeas: GeneralIdeaRecord[]) => {
+    setServerIdeas(nextIdeas);
+    try {
+      await fetch('/api/group-state/ideas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ideas: nextIdeas }),
+      });
+    } catch {
+      // Ignore network error
+    }
+  };
+
+  // Attach Firestore listeners when authenticated with Firebase Auth
   useEffect(() => {
     if (!isAuthReady || !currentUser) {
       setCloudHouses(null);
@@ -296,101 +434,6 @@ function MainApplication() {
     };
   }, [isAuthReady, currentUser]);
 
-  // Automatic one-time migration: if a user previously removed the default houses and added their own house
-  // in localStorage before logging in, rescue their custom house(s) into the central Cloud database
-  // and remove any leftover default demo houses so everyone sees the exact same list!
-  useEffect(() => {
-    if (!currentUser || cloudHouses === null) return;
-    if (localStorage.getItem(STORAGE_KEY_MIGRATED) === 'done') return;
-
-    const migrateLocalChangesToCloud = async () => {
-      try {
-        localStorage.setItem(STORAGE_KEY_MIGRATED, 'done');
-
-        const rawLocalHouses = localStorage.getItem(STORAGE_KEY_HOUSES);
-        if (rawLocalHouses) {
-          const parsedHouses: HouseRecord[] = JSON.parse(rawLocalHouses);
-          if (Array.isArray(parsedHouses)) {
-            const localIds = new Set(parsedHouses.map((h) => h.id));
-            const customHouses = parsedHouses.filter((h) => !DEMO_HOUSE_IDS.has(h.id));
-            const cloudIds = new Set(cloudHouses.map((h) => h.id));
-
-            // 1. Upload any custom houses the user added locally that aren't in Firestore yet
-            for (const h of customHouses) {
-              const docId = sanitizeId(h.id);
-              if (!cloudIds.has(docId)) {
-                await setDoc(doc(db, 'houses', docId), {
-                  tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
-                  ownerId: currentUser.uid,
-                  title: (h.title || 'Vakantiehuis').slice(0, VALIDATION_CONSTRAINTS.TITLE_MAX),
-                  url: (h.url || 'https://www.airbnb.nl').slice(0, VALIDATION_CONSTRAINTS.URL_MAX),
-                  photoUrl: (h.photoUrl || '').slice(0, VALIDATION_CONSTRAINTS.URL_MAX),
-                  locationName: (h.locationName || 'Ardennen').slice(0, VALIDATION_CONSTRAINTS.LOCATION_MAX),
-                  lat: Number(h.lat) || 50.4,
-                  lng: Number(h.lng) || 5.8,
-                  totalPrice: Math.max(1, Math.round(Number(h.totalPrice) || 1500)),
-                  bedrooms: Math.max(1, Math.round(Number(h.bedrooms) || 4)),
-                  bathrooms: Math.max(1, Math.round(Number(h.bathrooms) || 2)),
-                  hasBbq: Boolean(h.hasBbq),
-                  hasFireplace: Boolean(h.hasFireplace),
-                  hasJacuzzi: Boolean(h.hasJacuzzi),
-                  hasSauna: Boolean(h.hasSauna),
-                  routeUrl: (h.routeUrl || '').slice(0, VALIDATION_CONSTRAINTS.URL_MAX),
-                  notes: (h.notes || '').slice(0, VALIDATION_CONSTRAINTS.NOTES_MAX),
-                  addedBy: (h.addedBy || friendName || 'Groepslid').slice(0, VALIDATION_CONSTRAINTS.NAME_MAX),
-                  voteScore: Math.round(Number(h.voteScore) || 5),
-                  voteCount: Math.round(Number(h.voteCount) || 1),
-                  status: 'active',
-                  createdAt: serverTimestamp(),
-                  updatedAt: serverTimestamp(),
-                });
-              }
-            }
-
-            // 2. If the user had deleted the default demo houses locally, also remove them from Firestore
-            for (const cloudHouse of cloudHouses) {
-              if (DEMO_HOUSE_IDS.has(cloudHouse.id) && !localIds.has(cloudHouse.id)) {
-                await deleteDoc(doc(db, 'houses', cloudHouse.id));
-              }
-            }
-          }
-        }
-
-        // Also rescue any custom participants added locally
-        const rawLocalParticipants = localStorage.getItem(STORAGE_KEY_PARTICIPANTS);
-        if (rawLocalParticipants && cloudParticipants !== null) {
-          const parsedParticipants: ParticipantRecord[] = JSON.parse(rawLocalParticipants);
-          if (Array.isArray(parsedParticipants)) {
-            const customParticipants = parsedParticipants.filter(
-              (p) => !DEMO_PARTICIPANT_IDS.has(p.id)
-            );
-            const cloudPIds = new Set(cloudParticipants.map((p) => p.id));
-            for (const p of customParticipants) {
-              const pId = sanitizeId(p.id);
-              if (!cloudPIds.has(pId)) {
-                await setDoc(doc(db, 'participants', pId), {
-                  tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
-                  ownerId: currentUser.uid,
-                  name: (p.name || 'Deelnemer').slice(0, VALIDATION_CONSTRAINTS.NAME_MAX),
-                  isDriver: Boolean(p.isDriver),
-                  carSeats: Math.max(0, Math.min(15, Math.round(Number(p.carSeats) || 0))),
-                  bikeSpots: Math.max(0, Math.min(15, Math.round(Number(p.bikeSpots) || 0))),
-                  notes: (p.notes || '').slice(0, 300),
-                  createdAt: serverTimestamp(),
-                  updatedAt: serverTimestamp(),
-                });
-              }
-            }
-          }
-        }
-      } catch {
-        // Ignore migration errors silently
-      }
-    };
-
-    migrateLocalChangesToCloud();
-  }, [currentUser, cloudHouses, cloudParticipants, friendName]);
-
   // Attach subcollection listeners for votes and comments of cloud houses
   useEffect(() => {
     if (!currentUser || !cloudHouses || cloudHouses.length === 0) return;
@@ -458,23 +501,31 @@ function MainApplication() {
     };
   }, [currentUser, cloudHouses]);
 
-  // 100% Central Cloud Data: Everyone in the friend group sees the exact same Firestore records!
+  // 100% Central Group Data: Everyone sees the exact same central server + Firestore records!
   const activeHouses: HouseRecord[] = useMemo(() => {
-    if (!cloudHouses) return [];
-    return cloudHouses.map((h) => ({
-      ...h,
-      votes: cloudVotesByHouse[h.id] || [],
-      comments: cloudCommentsByHouse[h.id] || [],
-    }));
-  }, [cloudHouses, cloudVotesByHouse, cloudCommentsByHouse]);
+    if (currentUser && cloudHouses && cloudHouses.length > 0 && (!serverHouses || serverHouses.length === 0)) {
+      return cloudHouses.map((h) => ({
+        ...h,
+        votes: cloudVotesByHouse[h.id] || [],
+        comments: cloudCommentsByHouse[h.id] || [],
+      }));
+    }
+    return serverHouses || [];
+  }, [currentUser, cloudHouses, cloudVotesByHouse, cloudCommentsByHouse, serverHouses]);
 
   const activeIdeas: GeneralIdeaRecord[] = useMemo(() => {
-    return cloudIdeas || [];
-  }, [cloudIdeas]);
+    if (currentUser && cloudIdeas && cloudIdeas.length > 0 && serverIdeas.length === 0) {
+      return cloudIdeas;
+    }
+    return serverIdeas;
+  }, [currentUser, cloudIdeas, serverIdeas]);
 
   const activeParticipants: ParticipantRecord[] = useMemo(() => {
-    return cloudParticipants || [];
-  }, [cloudParticipants]);
+    if (currentUser && cloudParticipants && cloudParticipants.length > 0 && serverParticipants.length === 0) {
+      return cloudParticipants;
+    }
+    return serverParticipants;
+  }, [currentUser, cloudParticipants, serverParticipants]);
 
   // Determine the single Group Favorite house (highest voteScore > 0)
   const favoriteHouseId = useMemo(() => {
@@ -521,13 +572,87 @@ function MainApplication() {
       });
   }, [activeHouses, facilityFilter, searchQuery, sortBy]);
 
-  // Save (Create or Edit) a house directly in central Firestore database
+  // Save (Create or Edit) a house in the central shared database
   const handleSaveHouse = async (houseData: HouseFormData, editingHouseId?: string) => {
-    if (!currentUser) return;
+    const nowIso = new Date().toISOString();
 
     if (editingHouseId) {
+      const nextHouses = activeHouses.map((h) =>
+        h.id === editingHouseId
+          ? {
+              ...h,
+              ...houseData,
+              updatedAt: nowIso,
+            }
+          : h
+      );
+      await pushHousesToServer(nextHouses);
+
+      if (currentUser) {
+        try {
+          await updateDoc(doc(db, 'houses', editingHouseId), {
+            title: houseData.title,
+            url: houseData.url,
+            photoUrl: houseData.photoUrl,
+            locationName: houseData.locationName,
+            lat: houseData.lat,
+            lng: houseData.lng,
+            totalPrice: houseData.totalPrice,
+            bedrooms: houseData.bedrooms,
+            bathrooms: houseData.bathrooms,
+            hasBbq: houseData.hasBbq,
+            hasFireplace: houseData.hasFireplace,
+            hasJacuzzi: houseData.hasJacuzzi,
+            hasSauna: houseData.hasSauna,
+            routeUrl: houseData.routeUrl,
+            notes: houseData.notes,
+            addedBy: houseData.addedBy,
+            updatedAt: serverTimestamp(),
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.UPDATE, `houses/${editingHouseId}`);
+        }
+      }
+      setEditingHouse(null);
+      showToast(`Wijzigingen aan "${houseData.title}" zijn opgeslagen voor de hele groep!`);
+      return;
+    }
+
+    // Create new house in central shared database
+    const newId = sanitizeId(`huis-${Date.now()}`);
+    const newRecord: HouseRecord = {
+      ...houseData,
+      id: newId,
+      tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
+      ownerId: activeUserId,
+      voteScore: 5,
+      voteCount: 1,
+      status: 'active',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      votes: [
+        {
+          id: activeUserId,
+          houseId: newId,
+          userId: activeUserId,
+          voterName: houseData.addedBy,
+          value: 5,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        },
+      ],
+      comments: [],
+    };
+
+    const nextHouses = [newRecord, ...activeHouses];
+    await pushHousesToServer(nextHouses);
+    setSelectedHouseId(newId);
+
+    if (currentUser) {
       try {
-        await updateDoc(doc(db, 'houses', editingHouseId), {
+        await setDoc(doc(db, 'houses', newId), {
+          tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
+          ownerId: currentUser.uid,
           title: houseData.title,
           url: houseData.url,
           photoUrl: houseData.photoUrl,
@@ -544,66 +669,34 @@ function MainApplication() {
           routeUrl: houseData.routeUrl,
           notes: houseData.notes,
           addedBy: houseData.addedBy,
+          voteScore: 5,
+          voteCount: 1,
+          status: 'active',
+          createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
       } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, `houses/${editingHouseId}`);
+        handleFirestoreError(error, OperationType.CREATE, `houses/${newId}`);
       }
-      setEditingHouse(null);
-      showToast(`Wijzigingen aan "${houseData.title}" zijn opgeslagen voor de hele groep!`);
-      return;
-    }
-
-    // Create new house in central Firestore database
-    const newId = sanitizeId(`huis-${Date.now()}`);
-    setSelectedHouseId(newId);
-
-    try {
-      await setDoc(doc(db, 'houses', newId), {
-        tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
-        ownerId: currentUser.uid,
-        title: houseData.title,
-        url: houseData.url,
-        photoUrl: houseData.photoUrl,
-        locationName: houseData.locationName,
-        lat: houseData.lat,
-        lng: houseData.lng,
-        totalPrice: houseData.totalPrice,
-        bedrooms: houseData.bedrooms,
-        bathrooms: houseData.bathrooms,
-        hasBbq: houseData.hasBbq,
-        hasFireplace: houseData.hasFireplace,
-        hasJacuzzi: houseData.hasJacuzzi,
-        hasSauna: houseData.hasSauna,
-        routeUrl: houseData.routeUrl,
-        notes: houseData.notes,
-        addedBy: houseData.addedBy,
-        voteScore: 5,
-        voteCount: 1,
-        status: 'active',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `houses/${newId}`);
     }
 
     showToast(`"${houseData.title}" staat nu live op de gedeelde lijst en kaart!`);
   };
 
-  // Vote on a house (-1 or 1..5) in central Firestore database
+  // Vote on a house (-1 or 1..5) in central shared database
   const handleVoteHouse = async (house: HouseRecord, voteValue: number) => {
-    if (!currentUser) return;
     const cleanVoterName = (friendName.trim() || 'Groepslid').slice(0, VALIDATION_CONSTRAINTS.NAME_MAX);
     const nowIso = new Date().toISOString();
 
     const existingVotes = house.votes || [];
-    const existingVote = existingVotes.find((v) => v.userId === currentUser.uid);
+    const existingVote = existingVotes.find(
+      (v) => v.userId === activeUserId || v.voterName.toLowerCase() === cleanVoterName.toLowerCase()
+    );
 
     let updatedVotes: HouseVoteRecord[];
     if (existingVote) {
       updatedVotes = existingVotes.map((v) =>
-        v.userId === currentUser.uid
+        v.id === existingVote.id
           ? { ...v, value: voteValue, voterName: cleanVoterName, updatedAt: nowIso }
           : v
       );
@@ -611,9 +704,9 @@ function MainApplication() {
       updatedVotes = [
         ...existingVotes,
         {
-          id: currentUser.uid,
+          id: activeUserId,
           houseId: house.id,
-          userId: currentUser.uid,
+          userId: activeUserId,
           voterName: cleanVoterName,
           value: voteValue,
           createdAt: nowIso,
@@ -625,17 +718,24 @@ function MainApplication() {
     const newScore = updatedVotes.reduce((acc, v) => acc + v.value, 0);
     const newCount = updatedVotes.length;
 
-    const voteDocRef = doc(db, 'houses', house.id, 'votes', currentUser.uid);
-    const houseDocRef = doc(db, 'houses', house.id);
-    try {
-      const batch = writeBatch(db);
-      if (existingVote) {
-        batch.update(voteDocRef, {
-          voterName: cleanVoterName,
-          value: voteValue,
-          updatedAt: serverTimestamp(),
-        });
-      } else {
+    const nextHouses = activeHouses.map((h) =>
+      h.id === house.id
+        ? {
+            ...h,
+            voteScore: newScore,
+            voteCount: newCount,
+            votes: updatedVotes,
+            updatedAt: nowIso,
+          }
+        : h
+    );
+    await pushHousesToServer(nextHouses);
+
+    if (currentUser) {
+      const voteDocRef = doc(db, 'houses', house.id, 'votes', currentUser.uid);
+      const houseDocRef = doc(db, 'houses', house.id);
+      try {
+        const batch = writeBatch(db);
         batch.set(voteDocRef, {
           houseId: house.id,
           userId: currentUser.uid,
@@ -644,15 +744,15 @@ function MainApplication() {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+        batch.update(houseDocRef, {
+          voteScore: newScore,
+          voteCount: newCount,
+          updatedAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, `houses/${house.id}/votes/${currentUser.uid}`);
       }
-      batch.update(houseDocRef, {
-        voteScore: newScore,
-        voteCount: newCount,
-        updatedAt: serverTimestamp(),
-      });
-      await batch.commit();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `houses/${house.id}/votes/${currentUser.uid}`);
     }
 
     showToast(
@@ -662,137 +762,184 @@ function MainApplication() {
     );
   };
 
-  // Add a comment to a house in central Firestore database
+  // Add a comment to a house in central shared database
   const handleAddComment = async (house: HouseRecord) => {
-    if (!currentUser) return;
     const rawDraft = commentDrafts[house.id] || '';
     const cleanText = rawDraft.trim().slice(0, VALIDATION_CONSTRAINTS.COMMENT_MAX);
     if (!cleanText) return;
 
     const cleanAuthor = (friendName.trim() || 'Groepslid').slice(0, VALIDATION_CONSTRAINTS.NAME_MAX);
     const commentId = sanitizeId(`reactie-${Date.now()}`);
+    const nowIso = new Date().toISOString();
+
+    const newComment: HouseCommentRecord = {
+      id: commentId,
+      houseId: house.id,
+      authorId: activeUserId,
+      authorName: cleanAuthor,
+      text: cleanText,
+      createdAt: nowIso,
+    };
 
     setCommentDrafts((prev) => ({ ...prev, [house.id]: '' }));
 
-    try {
-      await setDoc(doc(db, 'houses', house.id, 'comments', commentId), {
-        houseId: house.id,
-        authorId: currentUser.uid,
-        authorName: cleanAuthor,
-        text: cleanText,
-        createdAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `houses/${house.id}/comments/${commentId}`);
+    const nextHouses = activeHouses.map((h) =>
+      h.id === house.id
+        ? {
+            ...h,
+            comments: [...(h.comments || []), newComment],
+          }
+        : h
+    );
+    await pushHousesToServer(nextHouses);
+
+    if (currentUser) {
+      try {
+        await setDoc(doc(db, 'houses', house.id, 'comments', commentId), {
+          houseId: house.id,
+          authorId: currentUser.uid,
+          authorName: cleanAuthor,
+          text: cleanText,
+          createdAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `houses/${house.id}/comments/${commentId}`);
+      }
     }
   };
 
-  // Delete a house from central Firestore database (with undo capability)
+  // Delete a house from central shared database (with undo capability)
   const handleDeleteHouse = async (house: HouseRecord) => {
-    if (!currentUser) return;
     setLastDeletedHouse(house);
     if (selectedHouseId === house.id) {
       setSelectedHouseId(null);
     }
 
+    const nextHouses = activeHouses.filter((h) => h.id !== house.id);
+    await pushHousesToServer(nextHouses);
+
+    // Also remove from local browser storage so it can never be re-rescued
     try {
-      await deleteDoc(doc(db, 'houses', house.id));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `houses/${house.id}`);
+      localStorage.setItem(STORAGE_KEY_HOUSES, JSON.stringify(nextHouses));
+    } catch {
+      // Ignore
+    }
+
+    if (currentUser) {
+      try {
+        await deleteDoc(doc(db, 'houses', house.id));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `houses/${house.id}`);
+      }
     }
     showToast(`"${house.title}" is verwijderd uit de centrale groepslijst.`);
   };
 
-  // Undo last deleted house in central Firestore database
+  // Undo last deleted house in central shared database
   const handleUndoDeleteHouse = async () => {
-    if (!lastDeletedHouse || !currentUser) return;
+    if (!lastDeletedHouse) return;
     const restored = lastDeletedHouse;
     setLastDeletedHouse(null);
 
-    try {
-      await setDoc(doc(db, 'houses', restored.id), {
-        tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
-        ownerId: currentUser.uid,
-        title: restored.title,
-        url: restored.url,
-        photoUrl: restored.photoUrl || '',
-        locationName: restored.locationName,
-        lat: restored.lat,
-        lng: restored.lng,
-        totalPrice: restored.totalPrice,
-        bedrooms: restored.bedrooms,
-        bathrooms: restored.bathrooms,
-        hasBbq: Boolean(restored.hasBbq),
-        hasFireplace: Boolean(restored.hasFireplace),
-        hasJacuzzi: Boolean(restored.hasJacuzzi),
-        hasSauna: Boolean(restored.hasSauna),
-        routeUrl: restored.routeUrl || '',
-        notes: restored.notes || '',
-        addedBy: restored.addedBy,
-        voteScore: restored.voteScore,
-        voteCount: restored.voteCount,
-        status: 'active',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `houses/${restored.id}`);
-    }
-    showToast(`"${restored.title}" is weer teruggezet in de centrale lijst!`);
-  };
+    const nextHouses = [restored, ...activeHouses];
+    await pushHousesToServer(nextHouses);
 
-  // Clear all houses in central Firestore database
-  const handleClearAllHouses = async () => {
-    if (!currentUser) return;
-    const currentList = [...activeHouses];
-    setSelectedHouseId(null);
-
-    try {
-      for (const h of currentList) {
-        await deleteDoc(doc(db, 'houses', h.id));
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, 'houses');
-    }
-    showToast('De centrale lijst met huisjes is voor iedereen leeggemaakt.');
-  };
-
-  // Restore the 4 example houses into central Firestore database
-  const handleRestoreStarterHouses = async () => {
-    if (!currentUser) return;
-    try {
-      for (const h of INITIAL_HOUSES) {
-        const docId = sanitizeId(h.id);
-        await setDoc(doc(db, 'houses', docId), {
+    if (currentUser) {
+      try {
+        await setDoc(doc(db, 'houses', restored.id), {
           tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
           ownerId: currentUser.uid,
-          title: h.title.slice(0, VALIDATION_CONSTRAINTS.TITLE_MAX),
-          url: h.url.slice(0, VALIDATION_CONSTRAINTS.URL_MAX),
-          photoUrl: (h.photoUrl || '').slice(0, VALIDATION_CONSTRAINTS.URL_MAX),
-          locationName: h.locationName.slice(0, VALIDATION_CONSTRAINTS.LOCATION_MAX),
-          lat: Number(h.lat),
-          lng: Number(h.lng),
-          totalPrice: Math.round(Number(h.totalPrice)),
-          bedrooms: Math.round(Number(h.bedrooms)),
-          bathrooms: Math.round(Number(h.bathrooms)),
-          hasBbq: Boolean(h.hasBbq),
-          hasFireplace: Boolean(h.hasFireplace),
-          hasJacuzzi: Boolean(h.hasJacuzzi),
-          hasSauna: Boolean(h.hasSauna),
-          routeUrl: (h.routeUrl || '').slice(0, VALIDATION_CONSTRAINTS.URL_MAX),
-          notes: (h.notes || '').slice(0, VALIDATION_CONSTRAINTS.NOTES_MAX),
-          addedBy: h.addedBy.slice(0, VALIDATION_CONSTRAINTS.NAME_MAX),
-          voteScore: Math.round(Number(h.voteScore) || 0),
-          voteCount: Math.round(Number(h.voteCount) || 0),
+          title: restored.title,
+          url: restored.url,
+          photoUrl: restored.photoUrl || '',
+          locationName: restored.locationName,
+          lat: restored.lat,
+          lng: restored.lng,
+          totalPrice: restored.totalPrice,
+          bedrooms: restored.bedrooms,
+          bathrooms: restored.bathrooms,
+          hasBbq: Boolean(restored.hasBbq),
+          hasFireplace: Boolean(restored.hasFireplace),
+          hasJacuzzi: Boolean(restored.hasJacuzzi),
+          hasSauna: Boolean(restored.hasSauna),
+          routeUrl: restored.routeUrl || '',
+          notes: restored.notes || '',
+          addedBy: restored.addedBy,
+          voteScore: restored.voteScore,
+          voteCount: restored.voteCount,
           status: 'active',
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `houses/${restored.id}`);
       }
-      showToast('De 4 voorbeeld-huisjes staan nu in de centrale lijst.');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'houses');
     }
+    showToast(`"${restored.title}" is weer teruggezet in de centrale lijst!`);
+  };
+
+  // Clear all houses in central shared database
+  const handleClearAllHouses = async () => {
+    const currentList = [...activeHouses];
+    setSelectedHouseId(null);
+    await pushHousesToServer([]);
+
+    try {
+      localStorage.setItem(STORAGE_KEY_HOUSES, JSON.stringify([]));
+    } catch {
+      // Ignore
+    }
+
+    if (currentUser) {
+      try {
+        for (const h of currentList) {
+          await deleteDoc(doc(db, 'houses', h.id));
+        }
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, 'houses');
+      }
+    }
+    showToast('De centrale lijst met huisjes is voor iedereen leeggemaakt.');
+  };
+
+  // Restore the 4 example houses into central shared database
+  const handleRestoreStarterHouses = async () => {
+    await pushHousesToServer(INITIAL_HOUSES);
+    if (currentUser) {
+      try {
+        for (const h of INITIAL_HOUSES) {
+          const docId = sanitizeId(h.id);
+          await setDoc(doc(db, 'houses', docId), {
+            tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
+            ownerId: currentUser.uid,
+            title: h.title.slice(0, VALIDATION_CONSTRAINTS.TITLE_MAX),
+            url: h.url.slice(0, VALIDATION_CONSTRAINTS.URL_MAX),
+            photoUrl: (h.photoUrl || '').slice(0, VALIDATION_CONSTRAINTS.URL_MAX),
+            locationName: h.locationName.slice(0, VALIDATION_CONSTRAINTS.LOCATION_MAX),
+            lat: Number(h.lat),
+            lng: Number(h.lng),
+            totalPrice: Math.round(Number(h.totalPrice)),
+            bedrooms: Math.round(Number(h.bedrooms)),
+            bathrooms: Math.round(Number(h.bathrooms)),
+            hasBbq: Boolean(h.hasBbq),
+            hasFireplace: Boolean(h.hasFireplace),
+            hasJacuzzi: Boolean(h.hasJacuzzi),
+            hasSauna: Boolean(h.hasSauna),
+            routeUrl: (h.routeUrl || '').slice(0, VALIDATION_CONSTRAINTS.URL_MAX),
+            notes: (h.notes || '').slice(0, VALIDATION_CONSTRAINTS.NOTES_MAX),
+            addedBy: h.addedBy.slice(0, VALIDATION_CONSTRAINTS.NAME_MAX),
+            voteScore: Math.round(Number(h.voteScore) || 0),
+            voteCount: Math.round(Number(h.voteCount) || 0),
+            status: 'active',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, 'houses');
+      }
+    }
+    showToast('De 4 voorbeeld-huisjes staan nu in de centrale lijst.');
   };
 
   // Open edit modal for a house
@@ -801,35 +948,52 @@ function MainApplication() {
     setIsAddModalOpen(true);
   };
 
-  // PARTICIPANTS & CARPOOL MANAGEMENT (Central Firestore)
+  // PARTICIPANTS & CARPOOL MANAGEMENT (Central Shared Database)
   const handleAddParticipant = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser) return;
     const cleanName = participantName.trim().slice(0, VALIDATION_CONSTRAINTS.NAME_MAX);
     if (!cleanName) return;
 
     const pId = sanitizeId(`deelnemer-${Date.now()}`);
+    const nowIso = new Date().toISOString();
     const seats = participantIsDriver ? Math.max(1, Math.min(15, Number(participantCarSeats) || 1)) : 0;
     const bikes = participantIsDriver ? Math.max(0, Math.min(15, Number(participantBikeSpots) || 0)) : 0;
     const cleanNotes = participantNotes.trim().slice(0, 300);
 
+    const newParticipant: ParticipantRecord = {
+      id: pId,
+      tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
+      ownerId: activeUserId,
+      name: cleanName,
+      isDriver: participantIsDriver,
+      carSeats: seats,
+      bikeSpots: bikes,
+      notes: cleanNotes,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
     setParticipantName('');
     setParticipantNotes('');
 
-    try {
-      await setDoc(doc(db, 'participants', pId), {
-        tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
-        ownerId: currentUser.uid,
-        name: cleanName,
-        isDriver: participantIsDriver,
-        carSeats: seats,
-        bikeSpots: bikes,
-        notes: cleanNotes,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `participants/${pId}`);
+    await pushParticipantsToServer([...activeParticipants, newParticipant]);
+
+    if (currentUser) {
+      try {
+        await setDoc(doc(db, 'participants', pId), {
+          tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
+          ownerId: currentUser.uid,
+          name: cleanName,
+          isDriver: participantIsDriver,
+          carSeats: seats,
+          bikeSpots: bikes,
+          notes: cleanNotes,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `participants/${pId}`);
+      }
     }
 
     showToast(`${cleanName} is toegevoegd aan de centrale deelnemerslijst!`);
@@ -839,7 +1003,6 @@ function MainApplication() {
     participant: ParticipantRecord,
     updates: Partial<Pick<ParticipantRecord, 'isDriver' | 'carSeats' | 'bikeSpots' | 'notes'>>
   ) => {
-    if (!currentUser) return;
     const nextDriver = updates.isDriver !== undefined ? updates.isDriver : participant.isDriver;
     const nextSeats = nextDriver
       ? Math.max(1, Math.min(15, updates.carSeats !== undefined ? updates.carSeats : participant.carSeats || 3))
@@ -849,81 +1012,128 @@ function MainApplication() {
       : 0;
     const nextNotes = updates.notes !== undefined ? updates.notes.slice(0, 300) : participant.notes;
 
-    try {
-      await updateDoc(doc(db, 'participants', participant.id), {
-        isDriver: nextDriver,
-        carSeats: nextSeats,
-        bikeSpots: nextBikes,
-        notes: nextNotes,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `participants/${participant.id}`);
+    const nowIso = new Date().toISOString();
+    const nextList = activeParticipants.map((p) =>
+      p.id === participant.id
+        ? {
+            ...p,
+            isDriver: nextDriver,
+            carSeats: nextSeats,
+            bikeSpots: nextBikes,
+            notes: nextNotes,
+            updatedAt: nowIso,
+          }
+        : p
+    );
+    await pushParticipantsToServer(nextList);
+
+    if (currentUser && cloudParticipants && cloudParticipants.some((p) => p.id === participant.id)) {
+      try {
+        await updateDoc(doc(db, 'participants', participant.id), {
+          isDriver: nextDriver,
+          carSeats: nextSeats,
+          bikeSpots: nextBikes,
+          notes: nextNotes,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `participants/${participant.id}`);
+      }
     }
   };
 
   const handleDeleteParticipant = async (participant: ParticipantRecord) => {
-    if (!currentUser) return;
-    try {
-      await deleteDoc(doc(db, 'participants', participant.id));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `participants/${participant.id}`);
+    const nextList = activeParticipants.filter((p) => p.id !== participant.id);
+    await pushParticipantsToServer(nextList);
+
+    if (currentUser && cloudParticipants && cloudParticipants.some((p) => p.id === participant.id)) {
+      try {
+        await deleteDoc(doc(db, 'participants', participant.id));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `participants/${participant.id}`);
+      }
     }
     showToast(`${participant.name} verwijderd van de deelnemerslijst.`);
   };
 
-  // Delete an idea from central Firestore
+  // Delete an idea from central shared database
   const handleDeleteIdea = async (idea: GeneralIdeaRecord) => {
-    if (!currentUser) return;
-    try {
-      await deleteDoc(doc(db, 'ideas', idea.id));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `ideas/${idea.id}`);
+    const nextIdeas = activeIdeas.filter((i) => i.id !== idea.id);
+    await pushIdeasToServer(nextIdeas);
+
+    if (currentUser && cloudIdeas && cloudIdeas.some((i) => i.id === idea.id)) {
+      try {
+        await deleteDoc(doc(db, 'ideas', idea.id));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `ideas/${idea.id}`);
+      }
     }
     showToast('Idee verwijderd.');
   };
 
-  // Add a general idea to central Firestore
+  // Add a general idea to central shared database
   const handleAddIdea = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser) return;
     const cleanText = ideaText.trim().slice(0, VALIDATION_CONSTRAINTS.IDEA_MAX);
     if (cleanText.length < VALIDATION_CONSTRAINTS.IDEA_MIN) return;
 
     const cleanAuthor = (friendName.trim() || 'Groepslid').slice(0, VALIDATION_CONSTRAINTS.NAME_MAX);
     const ideaId = sanitizeId(`idee-${Date.now()}`);
+    const nowIso = new Date().toISOString();
+
+    const newIdea: GeneralIdeaRecord = {
+      id: ideaId,
+      tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
+      authorId: activeUserId,
+      authorName: cleanAuthor,
+      category: ideaCategory,
+      text: cleanText,
+      likesCount: 1,
+      status: 'open',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
 
     setIdeaText('');
+    await pushIdeasToServer([newIdea, ...activeIdeas]);
 
-    try {
-      await setDoc(doc(db, 'ideas', ideaId), {
-        tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
-        authorId: currentUser.uid,
-        authorName: cleanAuthor,
-        category: ideaCategory,
-        text: cleanText,
-        likesCount: 0,
-        status: 'open',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `ideas/${ideaId}`);
+    if (currentUser) {
+      try {
+        await setDoc(doc(db, 'ideas', ideaId), {
+          tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
+          authorId: currentUser.uid,
+          authorName: cleanAuthor,
+          category: ideaCategory,
+          text: cleanText,
+          likesCount: 0,
+          status: 'open',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `ideas/${ideaId}`);
+      }
     }
     showToast('Idee toegevoegd aan het centrale ideeënbord!');
   };
 
-  // Upvote a general idea in central Firestore
+  // Upvote a general idea in central shared database
   const handleLikeIdea = async (idea: GeneralIdeaRecord) => {
-    if (!currentUser) return;
     const nextLikes = Math.min(1000, idea.likesCount + 1);
-    try {
-      await updateDoc(doc(db, 'ideas', idea.id), {
-        likesCount: nextLikes,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `ideas/${idea.id}`);
+    const nextIdeas = activeIdeas.map((item) =>
+      item.id === idea.id ? { ...item, likesCount: nextLikes } : item
+    );
+    await pushIdeasToServer(nextIdeas);
+
+    if (currentUser && cloudIdeas && cloudIdeas.some((i) => i.id === idea.id)) {
+      try {
+        await updateDoc(doc(db, 'ideas', idea.id), {
+          likesCount: nextLikes,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `ideas/${idea.id}`);
+      }
     }
   };
 
@@ -964,13 +1174,13 @@ function MainApplication() {
     );
   }
 
-  // 2. Mandatory Login Gate (Google or Apple ID) so everyone always sees the exact same central cloud list
-  if (!currentUser) {
-    return <LoginPage />;
+  // 2. Mandatory Login Gate so everyone always sees the exact same central list
+  if (!isAuthenticated) {
+    return <LoginPage onDirectLogin={handleDirectLogin} />;
   }
 
-  // 3. Initial Cloud Data Loading State
-  if (cloudHouses === null) {
+  // 3. Initial Central Data Loading State
+  if (serverHouses === null) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] text-[#0F172A] flex items-center justify-center p-6">
         <div className="text-center space-y-3">
@@ -1121,12 +1331,12 @@ function MainApplication() {
 
             <button
               type="button"
-              onClick={() => logOutUser()}
-              title={`Ingelogd als ${currentUser.email || friendName} — klik om uit te loggen`}
+              onClick={handleLogoutAll}
+              title={`Ingelogd als ${activeUserEmail} — klik om uit te loggen`}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>{currentUser.email || 'Ingelogd'}</span>
+              <span>{friendName || activeUserEmail}</span>
               <LogOut className="w-3.5 h-3.5 text-slate-400 ml-1" />
             </button>
           </div>
