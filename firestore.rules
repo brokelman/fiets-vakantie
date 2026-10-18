@@ -149,15 +149,15 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
-          // Action 1: Owner edits house details while active
+          // Action 1: Verified group member or owner edits house details while active
           (
             existing().status == 'active' &&
-            existing().ownerId == request.auth.uid &&
+            existing().tripId == 'racefiets-2027' &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'title', 'url', 'photoUrl', 'locationName', 'lat', 'lng',
               'totalPrice', 'bedrooms', 'bathrooms', 'hasBikeStorage',
               'hasBikeWash', 'hasSaunaJacuzzi', 'routeUrl', 'notes',
-              'status', 'updatedAt'
+              'addedBy', 'status', 'updatedAt'
             ])
           ) ||
           // Action 2: Group member updates vote aggregates atomically with their vote document
@@ -170,7 +170,7 @@ service cloud.firestore {
 
       allow delete: if isVerifiedUser() &&
         isValidId(houseId) &&
-        (existing().ownerId == request.auth.uid || isAdmin());
+        (existing().tripId == 'racefiets-2027' || existing().ownerId == request.auth.uid || isAdmin());
 
       // Subcollection: /houses/{houseId}/votes/{voteId}
       match /votes/{voteId} {
@@ -270,7 +270,7 @@ service cloud.firestore {
 
       allow delete: if isVerifiedUser() &&
         isValidId(ideaId) &&
-        (existing().authorId == request.auth.uid || isAdmin());
+        (existing().tripId == 'racefiets-2027' || existing().authorId == request.auth.uid || isAdmin());
     }
   }
 }

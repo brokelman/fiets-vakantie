@@ -23,7 +23,6 @@ import {
   Bath,
   Send,
   Lightbulb,
-  Share2,
   LogIn,
   LogOut,
   Cloud,
@@ -33,6 +32,12 @@ import {
   ChevronUp,
   Trash2,
   Star,
+  Pencil,
+  ListChecks,
+  LayoutGrid,
+  List,
+  RotateCcw,
+  MessageCircle,
 } from 'lucide-react';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import {
@@ -68,7 +73,7 @@ import {
 import { INITIAL_HOUSES, INITIAL_IDEAS } from './data/initialData';
 import { HouseIllustration } from './components/HouseIllustration';
 import { LeafletMap } from './components/LeafletMap';
-import { AddHouseModal } from './components/AddHouseModal';
+import { AddHouseModal, HouseFormData } from './components/AddHouseModal';
 import { ShareDataModal } from './components/ShareDataModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -97,7 +102,7 @@ function MainApplication() {
       const raw = localStorage.getItem(STORAGE_KEY_HOUSES);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) return parsed;
       }
     } catch {
       // Fallback to starter data
@@ -110,13 +115,16 @@ function MainApplication() {
       const raw = localStorage.getItem(STORAGE_KEY_IDEAS);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) return parsed;
       }
     } catch {
       // Fallback to starter ideas
     }
     return INITIAL_IDEAS;
   });
+
+  // Undo last deleted house
+  const [lastDeletedHouse, setLastDeletedHouse] = useState<HouseRecord | null>(null);
 
   // Cloud Firestore state (active when signed in with Google)
   const [cloudHouses, setCloudHouses] = useState<HouseRecord[] | null>(null);
@@ -125,7 +133,8 @@ function MainApplication() {
   const [cloudIdeas, setCloudIdeas] = useState<GeneralIdeaRecord[] | null>(null);
 
   // Navigation & UI state
-  const [activeView, setActiveView] = useState<'vergelijken' | 'ideeen'>('vergelijken');
+  const [activeView, setActiveView] = useState<'vergelijken' | 'beheren' | 'ideeen'>('vergelijken');
+  const [listDisplayMode, setListDisplayMode] = useState<'kaarten' | 'tabel'>('kaarten');
   const [mobilePane, setMobilePane] = useState<'beide' | 'kaart' | 'lijst'>('beide');
   const [selectedHouseId, setSelectedHouseId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>('populariteit');
@@ -142,6 +151,7 @@ function MainApplication() {
 
   // Modals
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [editingHouse, setEditingHouse] = useState<HouseRecord | null>(null);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -149,7 +159,7 @@ function MainApplication() {
     setToastMessage(msg);
     window.setTimeout(() => {
       setToastMessage((prev) => (prev === msg ? null : prev));
-    }, 3200);
+    }, 3500);
   };
 
   // Persist local state
@@ -371,7 +381,8 @@ function MainApplication() {
   const handleSyncStarterDataToCloud = async () => {
     if (!currentUser) return;
     try {
-      for (const h of localHouses) {
+      const sourceHouses = localHouses.length > 0 ? localHouses : INITIAL_HOUSES;
+      for (const h of sourceHouses) {
         const docId = sanitizeId(h.id);
         await setDoc(doc(db, 'houses', docId), {
           tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
@@ -413,7 +424,7 @@ function MainApplication() {
           updatedAt: serverTimestamp(),
         });
       }
-      showToast('Alle huisjes en ideeën staan nu live in de gedeelde Firebase database!');
+      showToast('De huisjes en ideeën staan nu live in de gedeelde Cloud-database!');
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'houses');
     }
@@ -463,18 +474,57 @@ function MainApplication() {
       });
   }, [activeHouses, facilityFilter, searchQuery, sortBy]);
 
-  // Add a new house
-  const handleAddHouse = async (
-    newHouseData: Omit<
-      HouseRecord,
-      'id' | 'tripId' | 'ownerId' | 'voteScore' | 'voteCount' | 'status' | 'createdAt' | 'updatedAt' | 'votes' | 'comments'
-    >
-  ) => {
-    const newId = sanitizeId(`huis-${Date.now()}`);
+  // Save (Create or Edit) a house
+  const handleSaveHouse = async (houseData: HouseFormData, editingHouseId?: string) => {
     const nowIso = new Date().toISOString();
 
+    if (editingHouseId) {
+      // Update existing house
+      setLocalHouses((prev) =>
+        prev.map((h) =>
+          h.id === editingHouseId
+            ? {
+                ...h,
+                ...houseData,
+                updatedAt: nowIso,
+              }
+            : h
+        )
+      );
+
+      if (currentUser && isUsingCloud) {
+        try {
+          await updateDoc(doc(db, 'houses', editingHouseId), {
+            title: houseData.title,
+            url: houseData.url,
+            photoUrl: houseData.photoUrl,
+            locationName: houseData.locationName,
+            lat: houseData.lat,
+            lng: houseData.lng,
+            totalPrice: houseData.totalPrice,
+            bedrooms: houseData.bedrooms,
+            bathrooms: houseData.bathrooms,
+            hasBikeStorage: houseData.hasBikeStorage,
+            hasBikeWash: houseData.hasBikeWash,
+            hasSaunaJacuzzi: houseData.hasSaunaJacuzzi,
+            routeUrl: houseData.routeUrl,
+            notes: houseData.notes,
+            addedBy: houseData.addedBy,
+            updatedAt: serverTimestamp(),
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.UPDATE, `houses/${editingHouseId}`);
+        }
+      }
+      setEditingHouse(null);
+      showToast(`Wijzigingen aan "${houseData.title}" zijn opgeslagen!`);
+      return;
+    }
+
+    // Create new house
+    const newId = sanitizeId(`huis-${Date.now()}`);
     const newRecord: HouseRecord = {
-      ...newHouseData,
+      ...houseData,
       id: newId,
       tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
       ownerId: currentUser?.uid || 'local-user',
@@ -488,7 +538,7 @@ function MainApplication() {
           id: `vote-${Date.now()}`,
           houseId: newId,
           userId: currentUser?.uid || 'local-user',
-          voterName: newHouseData.addedBy,
+          voterName: houseData.addedBy,
           value: 5,
           createdAt: nowIso,
           updatedAt: nowIso,
@@ -531,7 +581,7 @@ function MainApplication() {
       }
     }
 
-    showToast(`"${newRecord.title}" is toegevoegd aan de kaart!`);
+    showToast(`"${newRecord.title}" is toegevoegd aan de lijst en kaart!`);
   };
 
   // Vote on a house (-1 or 1..5)
@@ -657,21 +707,109 @@ function MainApplication() {
     }
   };
 
-  // Delete a house (owner or local)
+  // Delete a house (with undo capability)
   const handleDeleteHouse = async (house: HouseRecord) => {
+    setLastDeletedHouse(house);
     setLocalHouses((prev) => prev.filter((h) => h.id !== house.id));
     if (selectedHouseId === house.id) {
       setSelectedHouseId(null);
     }
 
-    if (currentUser && isUsingCloud && house.ownerId === currentUser.uid) {
+    if (currentUser && isUsingCloud) {
       try {
         await deleteDoc(doc(db, 'houses', house.id));
       } catch (error) {
         handleFirestoreError(error, OperationType.DELETE, `houses/${house.id}`);
       }
     }
-    showToast(`"${house.title}" verwijderd.`);
+    showToast(`"${house.title}" is verwijderd uit de lijst.`);
+  };
+
+  // Undo last deleted house
+  const handleUndoDeleteHouse = async () => {
+    if (!lastDeletedHouse) return;
+    const restored = lastDeletedHouse;
+    setLastDeletedHouse(null);
+    setLocalHouses((prev) => [restored, ...prev]);
+
+    if (currentUser && isUsingCloud) {
+      try {
+        await setDoc(doc(db, 'houses', restored.id), {
+          tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
+          ownerId: currentUser.uid,
+          title: restored.title,
+          url: restored.url,
+          photoUrl: restored.photoUrl || '',
+          locationName: restored.locationName,
+          lat: restored.lat,
+          lng: restored.lng,
+          totalPrice: restored.totalPrice,
+          bedrooms: restored.bedrooms,
+          bathrooms: restored.bathrooms,
+          hasBikeStorage: restored.hasBikeStorage,
+          hasBikeWash: restored.hasBikeWash,
+          hasSaunaJacuzzi: restored.hasSaunaJacuzzi,
+          routeUrl: restored.routeUrl || '',
+          notes: restored.notes || '',
+          addedBy: restored.addedBy,
+          voteScore: restored.voteScore,
+          voteCount: restored.voteCount,
+          status: 'active',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `houses/${restored.id}`);
+      }
+    }
+    showToast(`"${restored.title}" is weer teruggezet!`);
+  };
+
+  // Clear all houses (start with empty list)
+  const handleClearAllHouses = async () => {
+    const currentList = [...activeHouses];
+    setLocalHouses([]);
+    setSelectedHouseId(null);
+
+    if (currentUser && isUsingCloud) {
+      try {
+        for (const h of currentList) {
+          await deleteDoc(doc(db, 'houses', h.id));
+        }
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, 'houses');
+      }
+    }
+    showToast('De lijst met huisjes is helemaal leeggemaakt.');
+  };
+
+  // Restore the 4 example houses
+  const handleRestoreStarterHouses = async () => {
+    setLocalHouses(INITIAL_HOUSES);
+    if (currentUser) {
+      await handleSyncStarterDataToCloud();
+    } else {
+      showToast('De 4 voorbeeld-huisjes (Ardennen, Zuid-Limburg, Eifel) zijn teruggezet.');
+    }
+  };
+
+  // Open edit modal for a house
+  const handleOpenEditHouse = (house: HouseRecord) => {
+    setEditingHouse(house);
+    setIsAddModalOpen(true);
+  };
+
+  // Delete an idea
+  const handleDeleteIdea = async (idea: GeneralIdeaRecord) => {
+    setLocalIdeas((prev) => prev.filter((i) => i.id !== idea.id));
+    if (currentUser && cloudIdeas && cloudIdeas.some((i) => i.id === idea.id)) {
+      try {
+        await deleteDoc(doc(db, 'ideas', idea.id));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `ideas/${idea.id}`);
+      }
+    }
+    showToast('Idee verwijderd.');
   };
 
   // Add a general idea to the Idea Board
@@ -747,20 +885,6 @@ function MainApplication() {
     }
   };
 
-  const handleImportData = async (payload: { houses: HouseRecord[]; ideas: GeneralIdeaRecord[] }) => {
-    setLocalHouses(payload.houses);
-    if (payload.ideas.length > 0) {
-      setLocalIdeas(payload.ideas);
-    }
-    showToast('Selectie succesvol bijgewerkt!');
-  };
-
-  const handleResetStarterData = async () => {
-    setLocalHouses(INITIAL_HOUSES);
-    setLocalIdeas(INITIAL_IDEAS);
-    showToast('Voorbeeld-huisjes in Ardennen, Zuid-Limburg en Eifel hersteld.');
-  };
-
   const categoryLabels: Record<GeneralIdeaRecord['category'], string> = {
     regio: 'Regio & Klimmen',
     route: 'Routes & GPX',
@@ -799,6 +923,17 @@ function MainApplication() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveView('beheren')}
+            className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeView === 'beheren'
+                ? 'text-slate-900 underline decoration-[#FC4C02] decoration-2 underline-offset-8 font-semibold'
+                : ''
+            }`}
+          >
+            Lijst Beheren
+          </button>
+          <button
+            type="button"
             onClick={() => setActiveView('ideeen')}
             className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               activeView === 'ideeen'
@@ -813,16 +948,7 @@ function MainApplication() {
             onClick={() => setIsShareModalOpen(true)}
             className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
-            Deel / Importeer JSON
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (favoriteHouseId) handleShowOnMap(favoriteHouseId);
-            }}
-            className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            Groepsfavoriet
+            Deel op WhatsApp
           </button>
         </nav>
 
@@ -830,7 +956,10 @@ function MainApplication() {
         <div className="flex items-center gap-3 shrink-0">
           <button
             type="button"
-            onClick={() => setIsAddModalOpen(true)}
+            onClick={() => {
+              setEditingHouse(null);
+              setIsAddModalOpen(true);
+            }}
             className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#FC4C02] rounded-lg hover:bg-[#E04300] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
@@ -861,7 +990,7 @@ function MainApplication() {
             </p>
           </div>
 
-          {/* Collaborator Identity & Cloud / Share Controls */}
+          {/* Collaborator Identity & Cloud / WhatsApp Controls */}
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
             <div className="flex items-center gap-2 bg-slate-800/90 border border-slate-700 rounded-lg px-3 py-1.5">
               <span className="text-[11px] text-slate-400 whitespace-nowrap">Jouw naam:</span>
@@ -877,11 +1006,20 @@ function MainApplication() {
 
             <button
               type="button"
+              onClick={() => setActiveView('beheren')}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ListChecks className="w-3.5 h-3.5 text-[#FC4C02]" />
+              Lijst Beheren ({activeHouses.length})
+            </button>
+
+            <button
+              type="button"
               onClick={() => setIsShareModalOpen(true)}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <Share2 className="w-3.5 h-3.5 text-[#FC4C02]" />
-              JSON Backup / WhatsApp
+              <MessageCircle className="w-3.5 h-3.5 text-[#FC4C02]" />
+              Deel op WhatsApp
             </button>
 
             {currentUser ? (
@@ -893,7 +1031,7 @@ function MainApplication() {
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#FC4C02] text-white text-xs font-semibold hover:bg-[#E04300] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                   >
                     <Cloud className="w-3.5 h-3.5" />
-                    Zet 4 voorbeeld-huisjes in Cloud
+                    Zet huisjes in Cloud
                   </button>
                 )}
                 <button
@@ -921,6 +1059,34 @@ function MainApplication() {
         </div>
       </section>
 
+      {/* Undo Delete Banner when a house was just deleted */}
+      {lastDeletedHouse && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 sm:px-6 py-2.5">
+          <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-4 text-xs">
+            <span className="text-amber-900">
+              Huisje <strong>“{lastDeletedHouse.title}”</strong> is verwijderd.
+            </span>
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={handleUndoDeleteHouse}
+                className="inline-flex items-center gap-1 font-bold text-[#FC4C02] hover:underline cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Ongedaan maken (Zet terug)
+              </button>
+              <button
+                type="button"
+                onClick={() => setLastDeletedHouse(null)}
+                className="text-slate-500 hover:text-slate-800 cursor-pointer"
+              >
+                Sluiten
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toast Feedback Banner */}
       {toastMessage && (
         <div className="fixed bottom-5 right-5 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-lg shadow-lg border border-slate-700 text-xs font-medium flex items-center gap-2">
@@ -929,9 +1095,9 @@ function MainApplication() {
         </div>
       )}
 
-      {/* Mobile View Switcher (Kaart & Huisjes vs Ideeënbord) */}
-      <div className="flex lg:hidden items-center justify-between gap-2 px-4 py-2.5 bg-white border-b border-slate-200">
-        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+      {/* Mobile View Switcher (Kaart & Huisjes vs Lijst Beheren vs Ideeënbord) */}
+      <div className="flex lg:hidden flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-white border-b border-slate-200">
+        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
           <button
             type="button"
             onClick={() => setActiveView('vergelijken')}
@@ -939,7 +1105,16 @@ function MainApplication() {
               activeView === 'vergelijken' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
             }`}
           >
-            Huisjes ({activeHouses.length})
+            Kaart & Huisjes ({activeHouses.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveView('beheren')}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeView === 'beheren' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+            }`}
+          >
+            Beheren
           </button>
           <button
             type="button"
@@ -948,7 +1123,7 @@ function MainApplication() {
               activeView === 'ideeen' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
             }`}
           >
-            Ideeënbord ({activeIdeas.length})
+            Ideeën ({activeIdeas.length})
           </button>
         </div>
 
@@ -985,8 +1160,8 @@ function MainApplication() {
         )}
       </div>
 
-      {/* Main Content Area */}
-      {activeView === 'vergelijken' ? (
+      {/* VIEW 1: Kaart & Huisjes Vergelijken */}
+      {activeView === 'vergelijken' && (
         <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-6 py-5 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* LEFT COLUMN (Desktop 5 cols): Sticky Interactive Leaflet Map + Quick Idea Preview */}
           <div
@@ -1025,7 +1200,7 @@ function MainApplication() {
             </div>
           </div>
 
-          {/* RIGHT COLUMN (Desktop 7 cols): Calculator, Filters & House Cards List */}
+          {/* RIGHT COLUMN (Desktop 7 cols): Calculator, Filters & House Cards / Compact List */}
           <div
             className={`lg:col-span-7 space-y-5 ${
               mobilePane === 'kaart' ? 'hidden lg:block' : 'block'
@@ -1115,9 +1290,8 @@ function MainApplication() {
                   ))}
                 </div>
 
-                {/* Sort selector */}
+                {/* Sort & Display Mode selector */}
                 <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-xs text-slate-500 whitespace-nowrap">Sorteer op:</span>
                   <select
                     value={sortBy}
                     onChange={(e) => setSortBy(e.target.value as SortOption)}
@@ -1128,6 +1302,36 @@ function MainApplication() {
                     <option value="prijs_oplopend">Prijs (laag naar hoog)</option>
                     <option value="slaapkamers">Meeste slaapkamers</option>
                   </select>
+
+                  {/* Switch between Cards and Compact List Table */}
+                  <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+                    <button
+                      type="button"
+                      onClick={() => setListDisplayMode('kaarten')}
+                      title="Kaartweergave met foto's"
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                        listDisplayMode === 'kaarten'
+                          ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <LayoutGrid className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Kaarten</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setListDisplayMode('tabel')}
+                      title="Compacte beheerlijst"
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                        listDisplayMode === 'tabel'
+                          ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <List className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Compacte lijst</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1138,43 +1342,139 @@ function MainApplication() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filter op plaatsnaam, beklimming (bijv. Stockeu, Cauberg, Haussire) of naam..."
+                  placeholder="Zoek op plaatsnaam, beklimming (bijv. Stockeu, Cauberg, Haussire) of naam..."
                   className="w-full pl-9 pr-3.5 py-2 rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:border-[#FC4C02] focus:outline-hidden text-xs text-slate-900"
                 />
               </div>
             </div>
 
-            {/* Houses List */}
+            {/* Empty State */}
             {displayedHouses.length === 0 ? (
               <div className="bg-white rounded-xl border border-slate-200 p-10 text-center space-y-3">
                 <Bike className="w-8 h-8 text-slate-400 mx-auto" />
                 <h3 className="text-base font-bold text-slate-900">
-                  Geen vakantiehuizen gevonden met deze filters
+                  Geen vakantiehuizen gevonden
                 </h3>
                 <p className="text-xs text-slate-500 max-w-md mx-auto">
-                  Pas je filter aan of voeg direct een nieuw gevonden accommodatie toe op de kaart.
+                  Voeg jullie eerste eigen gevonden huisje toe, of zet de 4 voorbeeld-huisjes in de Ardennen en Zuid-Limburg terug.
                 </p>
-                <div className="flex items-center justify-center gap-2 pt-2">
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                  {(facilityFilter !== 'alle' || searchQuery.trim()) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFacilityFilter('alle');
+                        setSearchQuery('');
+                      }}
+                      className="px-4 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                    >
+                      Filters wissen
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
-                      setFacilityFilter('alle');
-                      setSearchQuery('');
+                      setEditingHouse(null);
+                      setIsAddModalOpen(true);
                     }}
-                    className="px-4 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
-                  >
-                    Filters wissen
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsAddModalOpen(true)}
                     className="px-4 py-2 rounded-lg bg-[#FC4C02] text-white text-xs font-semibold hover:bg-[#E04300] cursor-pointer"
                   >
                     + Nieuw Huisje Toevoegen
                   </button>
+                  {activeHouses.length === 0 && (
+                    <button
+                      type="button"
+                      onClick={handleRestoreStarterHouses}
+                      className="px-4 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                    >
+                      Zet 4 voorbeeld-huisjes terug
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : listDisplayMode === 'tabel' ? (
+              /* COMPACT LIST / TABLE MODE right inside the main view */
+              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-800">
+                    Overzichtslijst ({displayedHouses.length} huisjes)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveView('beheren')}
+                    className="text-xs font-semibold text-[#FC4C02] hover:underline cursor-pointer"
+                  >
+                    Volledig lijstbeheer openen →
+                  </button>
+                </div>
+                <div className="divide-y divide-slate-200">
+                  {displayedHouses.map((house) => {
+                    const pricePerPerson = Math.round(house.totalPrice / Math.max(1, cyclistCount));
+                    const isFavorite = house.id === favoriteHouseId && house.voteScore > 0;
+                    return (
+                      <div
+                        key={house.id}
+                        className="p-4 hover:bg-slate-50 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                      >
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex items-center gap-2">
+                            {isFavorite && (
+                              <span className="text-amber-600 text-xs font-bold shrink-0">★ Favoriet</span>
+                            )}
+                            <h4 className="text-sm font-bold text-slate-900 truncate">
+                              {house.title}
+                            </h4>
+                          </div>
+                          <div className="text-xs text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                            <span>{house.locationName}</span>
+                            <span>·</span>
+                            <span>{house.bedrooms} slpk / {house.bathrooms} badk</span>
+                            <span>·</span>
+                            <span>Door {house.addedBy}</span>
+                            <span>·</span>
+                            <span className="font-mono-num font-semibold text-slate-800">
+                              {house.voteScore} pt
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          <div className="text-right font-mono-num mr-2">
+                            <div className="text-sm font-bold text-[#FC4C02]">€{pricePerPerson} p.p.</div>
+                            <div className="text-[11px] text-slate-500">€{house.totalPrice} tot.</div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleShowOnMap(house.id)}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-800 cursor-pointer"
+                          >
+                            Op kaart
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditHouse(house)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100 text-xs font-medium text-slate-700 cursor-pointer"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                            Bewerk
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteHouse(house)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-semibold cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Verwijder
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ) : (
+              /* DETAILED HOUSE CARDS */
               <div className="space-y-4">
                 {displayedHouses.map((house) => {
                   const isFavorite = house.id === favoriteHouseId && house.voteScore > 0;
@@ -1232,23 +1532,31 @@ function MainApplication() {
                         {/* Right Content Column */}
                         <div className="md:col-span-7 p-4 sm:p-5 flex flex-col justify-between space-y-3.5">
                           <div>
-                            {/* Unboxed metadata kicker */}
-                            <div className="flex items-center justify-between gap-2 text-xs text-slate-500 mb-1">
+                            {/* Unboxed metadata kicker + clear Edit & Delete buttons */}
+                            <div className="flex items-center justify-between gap-2 text-xs text-slate-500 mb-1.5">
                               <span className="truncate">
                                 Toegevoegd door <strong className="text-slate-700">{house.addedBy}</strong>
                                 {' · '}
                                 {house.locationName}
                               </span>
-                              {(!currentUser || house.ownerId === currentUser.uid || !isUsingCloud) && (
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEditHouse(house)}
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors cursor-pointer text-[11px] font-medium"
+                                >
+                                  <Pencil className="w-3 h-3" />
+                                  Bewerken
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => handleDeleteHouse(house)}
-                                  title="Verwijder huisje"
-                                  className="text-slate-400 hover:text-red-600 transition-colors p-1 cursor-pointer shrink-0"
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded border border-red-200 bg-red-50/70 text-red-700 hover:bg-red-100 transition-colors cursor-pointer text-[11px] font-medium"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <Trash2 className="w-3 h-3" />
+                                  Verwijderen
                                 </button>
-                              )}
+                              </div>
                             </div>
 
                             <h3 className="text-lg font-bold text-slate-900 leading-snug">
@@ -1527,8 +1835,170 @@ function MainApplication() {
             )}
           </div>
         </main>
-      ) : (
-        /* VIEW 2: Algemene Ideeën & Regio's Board */
+      )}
+
+      {/* VIEW 2: Lijst Beheren (Dedicated Management Overview Table to Find, Edit & Delete Houses) */}
+      {activeView === 'beheren' && (
+        <main className="flex-1 max-w-[1280px] w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+          <div className="bg-white rounded-xl border border-slate-200 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-bold text-slate-900 font-display uppercase">
+                Huisjes & Lijst Beheren ({activeHouses.length})
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-600">
+                Overzichtelijke lijst van alle aangedragen huisjes. Hier kun je eenvoudig huisjes terugvinden, aanpassen of verwijderen.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setActiveView('vergelijken')}
+                className="px-3.5 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-800 hover:bg-slate-50 cursor-pointer"
+              >
+                ← Terug naar Kaart
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingHouse(null);
+                  setIsAddModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#FC4C02] text-white text-xs font-semibold hover:bg-[#E04300] cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                Nieuw Huisje Toevoegen
+              </button>
+            </div>
+          </div>
+
+          {/* Houses Management Table */}
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-3">
+              <span className="text-xs font-bold text-slate-800">
+                Alle vakantiehuizen in de lijst ({activeHouses.length})
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleRestoreStarterHouses}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  Herstel 4 voorbeeld-huisjes
+                </button>
+                {activeHouses.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearAllHouses}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 bg-red-50 text-xs font-semibold text-red-700 hover:bg-red-100 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Maak hele lijst leeg
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {activeHouses.length === 0 ? (
+              <div className="p-10 text-center space-y-3">
+                <p className="text-sm font-semibold text-slate-800">De lijst met huisjes is momenteel leeg.</p>
+                <p className="text-xs text-slate-500">
+                  Voeg zelf een eerste huisje toe of zet de 4 voorbeeld-huisjes terug.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-slate-500 bg-slate-50/50">
+                      <th className="py-3 px-4 font-semibold">Naam & Locatie</th>
+                      <th className="py-3 px-4 font-semibold">Door</th>
+                      <th className="py-3 px-4 font-semibold">Kamers</th>
+                      <th className="py-3 px-4 font-semibold text-right">Totaalprijs</th>
+                      <th className="py-3 px-4 font-semibold text-right">Prijs p.p. ({cyclistCount}p)</th>
+                      <th className="py-3 px-4 font-semibold text-right">Stemmen</th>
+                      <th className="py-3 px-4 font-semibold text-right">Acties (Beheren)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {activeHouses.map((house) => {
+                      const pp = Math.round(house.totalPrice / Math.max(1, cyclistCount));
+                      const isFav = house.id === favoriteHouseId && house.voteScore > 0;
+                      return (
+                        <tr key={house.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="py-3.5 px-4">
+                            <div className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
+                              {isFav && <span className="text-amber-500">★</span>}
+                              <span>{house.title}</span>
+                            </div>
+                            <div className="text-slate-500 mt-0.5 flex items-center gap-2">
+                              <span>{house.locationName}</span>
+                              <span>·</span>
+                              <a
+                                href={house.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[#FC4C02] hover:underline inline-flex items-center gap-0.5"
+                              >
+                                Bekijk site <ExternalLink className="w-3 h-3" />
+                              </a>
+                            </div>
+                          </td>
+                          <td className="py-3.5 px-4 font-medium text-slate-700 whitespace-nowrap">
+                            {house.addedBy}
+                          </td>
+                          <td className="py-3.5 px-4 text-slate-600 font-mono-num whitespace-nowrap">
+                            {house.bedrooms} slpk · {house.bathrooms} badk
+                          </td>
+                          <td className="py-3.5 px-4 text-right font-mono-num font-semibold text-slate-900 whitespace-nowrap">
+                            €{house.totalPrice}
+                          </td>
+                          <td className="py-3.5 px-4 text-right font-mono-num font-bold text-[#FC4C02] whitespace-nowrap">
+                            €{pp} p.p.
+                          </td>
+                          <td className="py-3.5 px-4 text-right font-mono-num text-slate-700 whitespace-nowrap">
+                            {house.voteScore} pt ({house.voteCount})
+                          </td>
+                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                            <div className="inline-flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleShowOnMap(house.id)}
+                                className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold cursor-pointer"
+                              >
+                                Toon op kaart
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditHouse(house)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                                Bewerken
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteHouse(house)}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                Verwijderen
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </main>
+      )}
+
+      {/* VIEW 3: Algemene Ideeën & Regio's Board */}
+      {activeView === 'ideeen' && (
         <main className="flex-1 max-w-[1140px] w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-xl border border-slate-200">
             <div>
@@ -1639,14 +2109,24 @@ function MainApplication() {
                     <p className="text-sm text-slate-900 leading-relaxed">{idea.text}</p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => handleLikeIdea(idea)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-900 text-xs font-mono-num font-semibold shrink-0 transition-colors cursor-pointer"
-                  >
-                    <ThumbsUp className="w-3.5 h-3.5 text-[#FC4C02]" />
-                    <span>+{idea.likesCount}</span>
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleLikeIdea(idea)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-900 text-xs font-mono-num font-semibold transition-colors cursor-pointer"
+                    >
+                      <ThumbsUp className="w-3.5 h-3.5 text-[#FC4C02]" />
+                      <span>+{idea.likesCount}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteIdea(idea)}
+                      title="Verwijder idee"
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1661,14 +2141,24 @@ function MainApplication() {
           <div className="flex items-center gap-4">
             <button
               type="button"
-              onClick={() => setIsShareModalOpen(true)}
+              onClick={() => setActiveView('beheren')}
               className="hover:text-slate-900 underline cursor-pointer"
             >
-              Exporteer / Importeer JSON
+              Huisjeslijst beheren
             </button>
             <button
               type="button"
-              onClick={() => setIsAddModalOpen(true)}
+              onClick={() => setIsShareModalOpen(true)}
+              className="hover:text-slate-900 underline cursor-pointer"
+            >
+              Deel op WhatsApp
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingHouse(null);
+                setIsAddModalOpen(true);
+              }}
               className="hover:text-slate-900 underline cursor-pointer"
             >
               Nieuw huisje toevoegen
@@ -1680,20 +2170,21 @@ function MainApplication() {
       {/* Modals */}
       <AddHouseModal
         isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
-        onAddHouse={handleAddHouse}
+        onClose={() => {
+          setIsAddModalOpen(false);
+          setEditingHouse(null);
+        }}
+        onSaveHouse={handleSaveHouse}
         cyclistCount={cyclistCount}
         defaultUserName={friendName}
+        editingHouse={editingHouse}
       />
 
       <ShareDataModal
         isOpen={isShareModalOpen}
         onClose={() => setIsShareModalOpen(false)}
         houses={activeHouses}
-        ideas={activeIdeas}
-        onImportData={handleImportData}
-        onResetToStarterData={handleResetStarterData}
-        isCloudConnected={Boolean(currentUser)}
+        cyclistCount={cyclistCount}
       />
     </div>
   );

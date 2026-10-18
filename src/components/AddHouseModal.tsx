@@ -19,12 +19,27 @@ import {
 import { HouseRecord } from '../types';
 import { VALIDATION_CONSTRAINTS } from '../firebase';
 
+export type HouseFormData = Omit<
+  HouseRecord,
+  | 'id'
+  | 'tripId'
+  | 'ownerId'
+  | 'voteScore'
+  | 'voteCount'
+  | 'status'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'votes'
+  | 'comments'
+>;
+
 interface AddHouseModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAddHouse: (newHouseData: Omit<HouseRecord, 'id' | 'tripId' | 'ownerId' | 'voteScore' | 'voteCount' | 'status' | 'createdAt' | 'updatedAt' | 'votes' | 'comments'>) => Promise<void>;
+  onSaveHouse: (houseData: HouseFormData, editingHouseId?: string) => Promise<void>;
   cyclistCount: number;
   defaultUserName: string;
+  editingHouse?: HouseRecord | null;
 }
 
 interface NominatimResult {
@@ -37,9 +52,10 @@ interface NominatimResult {
 export const AddHouseModal: React.FC<AddHouseModalProps> = ({
   isOpen,
   onClose,
-  onAddHouse,
+  onSaveHouse,
   cyclistCount,
   defaultUserName,
+  editingHouse = null,
 }) => {
   const [title, setTitle] = useState('');
   const [url, setUrl] = useState('');
@@ -67,11 +83,47 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
   const miniMapRef = useRef<L.Map | null>(null);
   const pinMarkerRef = useRef<L.Marker | null>(null);
 
+  // Populate form when opening for either new house or editing existing house
   useEffect(() => {
-    if (defaultUserName && !addedBy) {
-      setAddedBy(defaultUserName);
+    if (!isOpen) return;
+    setFormError(null);
+    setGeoResults([]);
+    setGeoMessage(null);
+
+    if (editingHouse) {
+      setTitle(editingHouse.title);
+      setUrl(editingHouse.url);
+      setPhotoUrl(editingHouse.photoUrl || '');
+      setLocationName(editingHouse.locationName);
+      setLat(editingHouse.lat);
+      setLng(editingHouse.lng);
+      setTotalPrice(String(editingHouse.totalPrice));
+      setBedrooms(String(editingHouse.bedrooms));
+      setBathrooms(String(editingHouse.bathrooms));
+      setHasBikeStorage(editingHouse.hasBikeStorage);
+      setHasBikeWash(editingHouse.hasBikeWash);
+      setHasSaunaJacuzzi(editingHouse.hasSaunaJacuzzi);
+      setRouteUrl(editingHouse.routeUrl || '');
+      setNotes(editingHouse.notes || '');
+      setAddedBy(editingHouse.addedBy || defaultUserName || 'Jasper');
+    } else {
+      setTitle('');
+      setUrl('');
+      setPhotoUrl('');
+      setLocationName('');
+      setLat(50.395);
+      setLng(5.9312);
+      setTotalPrice('1600');
+      setBedrooms('5');
+      setBathrooms('3');
+      setHasBikeStorage(true);
+      setHasBikeWash(true);
+      setHasSaunaJacuzzi(false);
+      setRouteUrl('');
+      setNotes('');
+      setAddedBy(defaultUserName || 'Jasper');
     }
-  }, [defaultUserName, addedBy]);
+  }, [isOpen, editingHouse, defaultUserName]);
 
   // Initialize interactive mini-map for clicking/dragging pin inside the modal
   useEffect(() => {
@@ -84,12 +136,15 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
       return;
     }
 
+    const startLat = editingHouse ? editingHouse.lat : lat;
+    const startLng = editingHouse ? editingHouse.lng : lng;
+
     const timer = window.setTimeout(() => {
       if (!miniMapContainerRef.current || miniMapRef.current) return;
 
       const map = L.map(miniMapContainerRef.current, {
-        center: [lat, lng],
-        zoom: 9,
+        center: [startLat, startLng],
+        zoom: editingHouse ? 11 : 9,
       });
 
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -119,7 +174,7 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
         iconAnchor: [16, 16],
       });
 
-      const marker = L.marker([lat, lng], { icon: pinIcon }).addTo(map);
+      const marker = L.marker([startLat, startLng], { icon: pinIcon }).addTo(map);
       pinMarkerRef.current = marker;
 
       map.on('click', (e: L.LeafletMouseEvent) => {
@@ -135,7 +190,7 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
     }, 60);
 
     return () => window.clearTimeout(timer);
-  }, [isOpen]);
+  }, [isOpen, editingHouse]);
 
   // Keep marker synced when lat/lng updates from Nominatim search
   useEffect(() => {
@@ -270,23 +325,26 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
 
     setIsSubmitting(true);
     try {
-      await onAddHouse({
-        title: cleanTitle,
-        url: cleanUrl,
-        photoUrl: cleanPhotoUrl,
-        locationName: cleanLoc,
-        lat: Number(lat),
-        lng: Number(lng),
-        totalPrice: Math.round(parsedPrice),
-        bedrooms: parsedBeds,
-        bathrooms: parsedBaths,
-        hasBikeStorage,
-        hasBikeWash,
-        hasSaunaJacuzzi,
-        routeUrl: cleanRouteUrl,
-        notes: cleanNotes,
-        addedBy: cleanAddedBy,
-      });
+      await onSaveHouse(
+        {
+          title: cleanTitle,
+          url: cleanUrl,
+          photoUrl: cleanPhotoUrl,
+          locationName: cleanLoc,
+          lat: Number(lat),
+          lng: Number(lng),
+          totalPrice: Math.round(parsedPrice),
+          bedrooms: parsedBeds,
+          bathrooms: parsedBaths,
+          hasBikeStorage,
+          hasBikeWash,
+          hasSaunaJacuzzi,
+          routeUrl: cleanRouteUrl,
+          notes: cleanNotes,
+          addedBy: cleanAddedBy,
+        },
+        editingHouse?.id
+      );
       onClose();
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Opslaan mislukt, probeer het opnieuw.');
@@ -302,7 +360,7 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50/70">
           <div>
             <h2 className="text-xl font-bold tracking-tight text-slate-900">
-              Nieuw Vakantiehuis Aandragen
+              {editingHouse ? 'Vakantiehuis Bewerken' : 'Nieuw Vakantiehuis Aandragen'}
             </h2>
             <p className="text-xs text-slate-500">
               Donderdag 27 mei t/m zondag 30 mei 2027 (3 nachten)
@@ -636,7 +694,11 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
               disabled={isSubmitting}
               className="px-5 py-2 rounded-lg bg-[#FC4C02] text-white text-xs font-semibold hover:bg-[#E04300] transition-colors cursor-pointer disabled:opacity-50"
             >
-              {isSubmitting ? 'Bezig met opslaan...' : 'Huisje Toevoegen aan Kaart'}
+              {isSubmitting
+                ? 'Bezig met opslaan...'
+                : editingHouse
+                ? 'Wijzigingen Opslaan'
+                : 'Huisje Toevoegen aan Kaart'}
             </button>
           </div>
         </form>
