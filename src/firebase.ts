@@ -25,6 +25,8 @@ export const appleProvider = new OAuthProvider('apple.com');
 appleProvider.addScope('email');
 appleProvider.addScope('name');
 
+const REDIRECT_PENDING_KEY = 'kopgroep27_oauth_redirect_pending';
+
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',
@@ -94,6 +96,11 @@ export async function signInWithGooglePopup(): Promise<UserCredential> {
 }
 
 export async function signInWithGoogleRedirect(): Promise<void> {
+  try {
+    sessionStorage.setItem(REDIRECT_PENDING_KEY, 'Google');
+  } catch {
+    // Ignore storage errors
+  }
   return signInWithRedirect(auth, googleProvider);
 }
 
@@ -102,11 +109,71 @@ export async function signInWithApplePopup(): Promise<UserCredential> {
 }
 
 export async function signInWithAppleRedirect(): Promise<void> {
+  try {
+    sessionStorage.setItem(REDIRECT_PENDING_KEY, 'Apple');
+  } catch {
+    // Ignore storage errors
+  }
   return signInWithRedirect(auth, appleProvider);
 }
 
-export async function checkAuthRedirectResult(): Promise<UserCredential | null> {
-  return getRedirectResult(auth);
+/**
+ * Unified Google Sign-In: tries pop-up first and automatically falls back to redirect if pop-up is blocked.
+ */
+export async function signInWithGoogle(): Promise<UserCredential | null> {
+  try {
+    return await signInWithPopup(auth, googleProvider);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('auth/popup-blocked')) {
+      await signInWithGoogleRedirect();
+      return null;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Unified Apple Sign-In: tries pop-up first and automatically falls back to redirect if pop-up is blocked.
+ */
+export async function signInWithApple(): Promise<UserCredential | null> {
+  try {
+    return await signInWithPopup(auth, appleProvider);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('auth/popup-blocked')) {
+      await signInWithAppleRedirect();
+      return null;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Only checks getRedirectResult when a redirect login was actually initiated in this tab.
+ * Prevents _validateOrigin from firing on initial page load and showing premature errors.
+ */
+export async function checkAuthRedirectResult(): Promise<{
+  credential: UserCredential | null;
+  providerLabel: 'Google' | 'Apple';
+}> {
+  let pendingProvider: 'Google' | 'Apple' | null = null;
+  try {
+    const raw = sessionStorage.getItem(REDIRECT_PENDING_KEY);
+    if (raw === 'Google' || raw === 'Apple') {
+      pendingProvider = raw;
+    }
+    sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+  } catch {
+    // Ignore
+  }
+
+  if (!pendingProvider) {
+    return { credential: null, providerLabel: 'Google' };
+  }
+
+  const credential = await getRedirectResult(auth);
+  return { credential, providerLabel: pendingProvider };
 }
 
 export async function logOutUser(): Promise<void> {
@@ -133,8 +200,8 @@ export function classifyAuthError(err: unknown, providerLabel: 'Google' | 'Apple
     const hostname = typeof window !== 'undefined' ? window.location.hostname : 'supermannen.netlify.app';
     return {
       code: 'unauthorized-domain',
-      title: `Domein (${hostname}) is nog niet vrijgegeven in Firebase Authentication`,
-      message: `Firebase blokkeert ${providerLabel} OAuth op "${hostname}" totdat dit domein eenmalig is toegevoegd onder Firebase Console → Authentication → Settings → Authorized domains (project: ${firebaseConfig.projectId}).`,
+      title: `Voeg "${hostname}" eenmalig toe in je Firebase Console`,
+      message: `Omdat deze app op een extern domein (${hostname}) draait, moet je dit domein eenmalig toevoegen in jouw eigen Firebase Console onder Authentication → Settings → Authorized domains (project: ${firebaseConfig.projectId}). Daarna werkt inloggen direct.`,
       rawMessage,
     };
   }
@@ -145,8 +212,8 @@ export function classifyAuthError(err: unknown, providerLabel: 'Google' | 'Apple
   ) {
     return {
       code: 'popup-closed',
-      title: 'Inlogvenster tussentijds gesloten',
-      message: `Het ${providerLabel}-inlogvenster is gesloten voordat het inloggen was afgerond. Klik opnieuw om in te loggen of gebruik de Redirect-optie op mobiel.`,
+      title: 'Inlogvenster gesloten',
+      message: `Het ${providerLabel}-inlogvenster is gesloten voordat het inloggen was afgerond. Klik opnieuw op de knop om in te loggen.`,
       rawMessage,
     };
   }
@@ -154,8 +221,8 @@ export function classifyAuthError(err: unknown, providerLabel: 'Google' | 'Apple
   if (rawMessage.includes('auth/popup-blocked')) {
     return {
       code: 'popup-blocked',
-      title: 'Pop-up geblokkeerd door je browser (bijv. iPhone Safari)',
-      message: `Je browser heeft het pop-upvenster geblokkeerd. Gebruik hieronder de knop "Inloggen via Redirect (Mobiel / Safari)" om zonder pop-up in te loggen.`,
+      title: 'Pop-up geblokkeerd door je browser',
+      message: 'Je browser heeft het pop-upvenster geblokkeerd. Probeer het opnieuw of sta pop-ups toe.',
       rawMessage,
     };
   }
@@ -173,7 +240,7 @@ export function classifyAuthError(err: unknown, providerLabel: 'Google' | 'Apple
     return {
       code: 'network-error',
       title: 'Geen netwerkverbinding met Firebase Authentication',
-      message: 'Controleer je internetverbinding of eventuele adblockers/tracking-blokkades en probeer het opnieuw.',
+      message: 'Controleer je internetverbinding en probeer het opnieuw.',
       rawMessage,
     };
   }
