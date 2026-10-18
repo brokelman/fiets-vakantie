@@ -64,17 +64,21 @@
           "type": "number",
           "description": "Aantal badkamers."
         },
-        "hasBikeStorage": {
+        "hasBbq": {
           "type": "boolean",
-          "description": "Afsluitbare fietsenstalling aanwezig."
+          "description": "BBQ plaats aanwezig."
         },
-        "hasBikeWash": {
+        "hasFireplace": {
           "type": "boolean",
-          "description": "Afspuitplek of tuinslang aanwezig."
+          "description": "Open haard aanwezig."
         },
-        "hasSaunaJacuzzi": {
+        "hasJacuzzi": {
           "type": "boolean",
-          "description": "Sauna of jacuzzi aanwezig."
+          "description": "Jacuzzi aanwezig."
+        },
+        "hasSauna": {
+          "type": "boolean",
+          "description": "Sauna aanwezig."
         },
         "routeUrl": {
           "type": "string",
@@ -132,9 +136,10 @@
         "totalPrice",
         "bedrooms",
         "bathrooms",
-        "hasBikeStorage",
-        "hasBikeWash",
-        "hasSaunaJacuzzi",
+        "hasBbq",
+        "hasFireplace",
+        "hasJacuzzi",
+        "hasSauna",
         "routeUrl",
         "notes",
         "addedBy",
@@ -310,6 +315,72 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "Participant": {
+      "title": "Participant",
+      "description": "Deelnemer aan het Racefiets Weekend met chauffeur-status, zitplaatsen in de auto en aantal fietsplekken.",
+      "type": "object",
+      "properties": {
+        "tripId": {
+          "type": "string",
+          "description": "Vaste identifier van het groepsweekend.",
+          "pattern": "^racefiets-2027$",
+          "minLength": 14,
+          "maxLength": 14
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID van degene die de deelnemer heeft toegevoegd.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "description": "Naam van de deelnemer.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "isDriver": {
+          "type": "boolean",
+          "description": "Of deze deelnemer chauffeur wil zijn."
+        },
+        "carSeats": {
+          "type": "number",
+          "description": "Aantal mensen dat mee kan in de auto (inclusief chauffeur)."
+        },
+        "bikeSpots": {
+          "type": "number",
+          "description": "Aantal racefietsen dat mee kan op de fietsendrager of in de auto."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optionele opmerking (bijv. vertrekplaats of type fietsendrager).",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Aanmaaktijdstip op de server."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Laatste wijzigingstijdstip op de server."
+        }
+      },
+      "required": [
+        "tripId",
+        "ownerId",
+        "name",
+        "isDriver",
+        "carSeats",
+        "bikeSpots",
+        "notes",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -336,6 +407,12 @@
         "$ref": "#/entities/GeneralIdea"
       },
       "description": "Collectie van algemene ideeën, regio-suggesties en logistieke notities."
+    },
+    "/participants/{participantId}": {
+      "schema": {
+        "$ref": "#/entities/Participant"
+      },
+      "description": "Collectie van deelnemers met auto- en fietscapaciteit voor de heen- en terugreis."
     }
   }
 }

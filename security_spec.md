@@ -8,9 +8,9 @@
    - For votes, `voteId` must strictly equal `request.auth.uid` and `incoming().userId == request.auth.uid`, plus `incoming().houseId == houseId`.
    - For comments, `incoming().authorId == request.auth.uid` and `incoming().houseId == houseId`.
 3. **Strict Keys & Anti-Update-Gap**:
-   - Every `create` and `update` invokes `isValidHouse`, `isValidHouseVote`, `isValidHouseComment`, or `isValidGeneralIdea` with `hasAll` and `hasOnly` key checks and strict string/number/boolean bounds.
+   - Every `create` and `update` invokes `isValidHouse`, `isValidHouseVote`, `isValidHouseComment`, `isValidGeneralIdea`, or `isValidParticipant` with `hasAll` and `hasOnly` key checks and strict string/number/boolean bounds.
 4. **Path Variable Hardening**:
-   - Single-document operations (`get`, `create`, `update`, `delete`) validate path IDs (`houseId`, `voteId`, `commentId`, `ideaId`) via `isValidId(id)` matching `^[a-zA-Z0-9_\-]+$` and `.size() <= 128`.
+   - Single-document operations (`get`, `create`, `update`, `delete`) validate path IDs (`houseId`, `voteId`, `commentId`, `ideaId`, `participantId`) via `isValidId(id)` matching `^[a-zA-Z0-9_\-]+$` and `.size() <= 128`.
 5. **Terminal State Locking**:
    - Once a `House` reaches `status == 'archived'` or a `GeneralIdea` reaches `status == 'resolved'`, non-admin updates are blocked.
 6. **Temporal & Identity Immutability**:
@@ -18,8 +18,7 @@
    - `updatedAt` must equal `request.time` on `create` and `update`.
    - `ownerId` / `authorId` / `userId` / `tripId` / `houseId` are immutable on `update`.
 7. **Secure List Queries**:
-   - `allow list` on `/houses/{houseId}` enforces `resource.data.tripId == 'racefiets-2027'`.
-   - `allow list` on `/ideas/{ideaId}` enforces `resource.data.tripId == 'racefiets-2027'`.
+   - `allow list` on `/houses/{houseId}`, `/ideas/{ideaId}`, and `/participants/{participantId}` enforces `resource.data.tripId == 'racefiets-2027'`.
    - `allow list` on `/houses/{houseId}/votes/{voteId}` and `/houses/{houseId}/comments/{commentId}` enforces `resource.data.houseId == houseId`.
 
 ## 2. The "Dirty Dozen" Payloads

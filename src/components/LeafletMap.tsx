@@ -176,6 +176,13 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       const safeLoc = house.locationName.replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const safeAddedBy = house.addedBy.replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+      const extrasList: string[] = [];
+      if (house.hasBbq) extrasList.push('BBQ plaats');
+      if (house.hasFireplace) extrasList.push('Open haard');
+      if (house.hasJacuzzi) extrasList.push('Jacuzzi');
+      if (house.hasSauna) extrasList.push('Sauna');
+      const extrasText = extrasList.length > 0 ? extrasList.join(' · ') : 'Geen extra’s opgegeven';
+
       const popupContent = document.createElement('div');
       popupContent.className = 'p-4 bg-white text-slate-900';
       popupContent.innerHTML = `
@@ -194,12 +201,12 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
             <div class="text-sm font-semibold text-slate-900">€${house.totalPrice}</div>
           </div>
         </div>
-        <div class="flex items-center justify-between text-xs text-slate-600 mb-3">
+        <div class="flex items-center justify-between text-xs text-slate-600 mb-2">
           <span>${house.bedrooms} slaapkamers · ${house.bathrooms} badkamers</span>
           <span class="font-mono-num font-semibold text-slate-900">${house.voteScore} pt</span>
         </div>
         <div class="text-[11px] text-slate-500 mb-3">
-          Check: ${house.hasBikeStorage ? '✓ Stalling' : '– Geen stalling'} · ${house.hasBikeWash ? '✓ Afspuitplek' : '–'} · ${house.hasSaunaJacuzzi ? '✓ Sauna/Jacuzzi' : '–'}
+          Extra’s: ${extrasText}
         </div>
         <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
           <span class="text-[11px] text-slate-500">Door ${safeAddedBy}</span>

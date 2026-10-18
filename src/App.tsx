@@ -15,9 +15,10 @@ import {
   MessageSquare,
   ExternalLink,
   Route,
-  ShieldCheck,
-  Droplets,
   Flame,
+  Waves,
+  ThermometerSun,
+  UtensilsCrossed,
   Trophy,
   BedDouble,
   Bath,
@@ -37,7 +38,8 @@ import {
   LayoutGrid,
   List,
   RotateCcw,
-  MessageCircle,
+  Car,
+  AlertCircle,
 } from 'lucide-react';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import {
@@ -68,17 +70,18 @@ import {
   HouseCommentRecord,
   HouseRecord,
   HouseVoteRecord,
+  ParticipantRecord,
   SortOption,
 } from './types';
-import { INITIAL_HOUSES, INITIAL_IDEAS } from './data/initialData';
+import { INITIAL_HOUSES, INITIAL_IDEAS, INITIAL_PARTICIPANTS } from './data/initialData';
 import { HouseIllustration } from './components/HouseIllustration';
 import { LeafletMap } from './components/LeafletMap';
 import { AddHouseModal, HouseFormData } from './components/AddHouseModal';
-import { ShareDataModal } from './components/ShareDataModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
-const STORAGE_KEY_HOUSES = 'kopgroep27_houses_v1';
+const STORAGE_KEY_HOUSES = 'kopgroep27_houses_v2';
 const STORAGE_KEY_IDEAS = 'kopgroep27_ideas_v1';
+const STORAGE_KEY_PARTICIPANTS = 'kopgroep27_participants_v1';
 const STORAGE_KEY_CYCLISTS = 'kopgroep27_cyclists_v1';
 const STORAGE_KEY_USERNAME = 'kopgroep27_username_v1';
 
@@ -96,7 +99,7 @@ function MainApplication() {
     return saved >= 2 && saved <= 24 ? saved : 8;
   });
 
-  // Houses & Ideas state (initialized with realistic Ardennes/Limburg/Eifel data)
+  // Houses, Ideas & Participants state
   const [localHouses, setLocalHouses] = useState<HouseRecord[]>(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY_HOUSES);
@@ -123,6 +126,19 @@ function MainApplication() {
     return INITIAL_IDEAS;
   });
 
+  const [localParticipants, setLocalParticipants] = useState<ParticipantRecord[]>(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_PARTICIPANTS);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // Fallback to starter participants
+    }
+    return INITIAL_PARTICIPANTS;
+  });
+
   // Undo last deleted house
   const [lastDeletedHouse, setLastDeletedHouse] = useState<HouseRecord | null>(null);
 
@@ -131,9 +147,10 @@ function MainApplication() {
   const [cloudVotesByHouse, setCloudVotesByHouse] = useState<Record<string, HouseVoteRecord[]>>({});
   const [cloudCommentsByHouse, setCloudCommentsByHouse] = useState<Record<string, HouseCommentRecord[]>>({});
   const [cloudIdeas, setCloudIdeas] = useState<GeneralIdeaRecord[] | null>(null);
+  const [cloudParticipants, setCloudParticipants] = useState<ParticipantRecord[] | null>(null);
 
   // Navigation & UI state
-  const [activeView, setActiveView] = useState<'vergelijken' | 'beheren' | 'ideeen'>('vergelijken');
+  const [activeView, setActiveView] = useState<'vergelijken' | 'beheren' | 'deelnemers' | 'ideeen'>('vergelijken');
   const [listDisplayMode, setListDisplayMode] = useState<'kaarten' | 'tabel'>('kaarten');
   const [mobilePane, setMobilePane] = useState<'beide' | 'kaart' | 'lijst'>('beide');
   const [selectedHouseId, setSelectedHouseId] = useState<string | null>(null);
@@ -145,6 +162,13 @@ function MainApplication() {
   });
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
 
+  // Participant form state
+  const [participantName, setParticipantName] = useState('');
+  const [participantIsDriver, setParticipantIsDriver] = useState(true);
+  const [participantCarSeats, setParticipantCarSeats] = useState<number>(3);
+  const [participantBikeSpots, setParticipantBikeSpots] = useState<number>(3);
+  const [participantNotes, setParticipantNotes] = useState('');
+
   // Idea board form state
   const [ideaCategory, setIdeaCategory] = useState<GeneralIdeaRecord['category']>('regio');
   const [ideaText, setIdeaText] = useState('');
@@ -152,7 +176,6 @@ function MainApplication() {
   // Modals
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingHouse, setEditingHouse] = useState<HouseRecord | null>(null);
-  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
@@ -178,6 +201,14 @@ function MainApplication() {
       // Ignore storage quota errors
     }
   }, [localIdeas]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_PARTICIPANTS, JSON.stringify(localParticipants));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [localParticipants]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_CYCLISTS, String(cyclistCount));
@@ -207,6 +238,7 @@ function MainApplication() {
     if (!isAuthReady || !currentUser) {
       setCloudHouses(null);
       setCloudIdeas(null);
+      setCloudParticipants(null);
       return;
     }
 
@@ -233,9 +265,10 @@ function MainApplication() {
             totalPrice: Number(d.totalPrice) || 1000,
             bedrooms: Number(d.bedrooms) || 4,
             bathrooms: Number(d.bathrooms) || 2,
-            hasBikeStorage: Boolean(d.hasBikeStorage),
-            hasBikeWash: Boolean(d.hasBikeWash),
-            hasSaunaJacuzzi: Boolean(d.hasSaunaJacuzzi),
+            hasBbq: Boolean(d.hasBbq),
+            hasFireplace: Boolean(d.hasFireplace),
+            hasJacuzzi: Boolean(d.hasJacuzzi ?? d.hasSaunaJacuzzi),
+            hasSauna: Boolean(d.hasSauna ?? d.hasSaunaJacuzzi),
             routeUrl: d.routeUrl || '',
             notes: d.notes || '',
             addedBy: d.addedBy || 'Groepslid',
@@ -283,9 +316,40 @@ function MainApplication() {
       }
     );
 
+    const participantsQuery = query(
+      collection(db, 'participants'),
+      where('tripId', '==', VALIDATION_CONSTRAINTS.TRIP_ID)
+    );
+
+    const unsubParticipants = onSnapshot(
+      participantsQuery,
+      (snapshot) => {
+        const items: ParticipantRecord[] = snapshot.docs.map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            tripId: d.tripId || VALIDATION_CONSTRAINTS.TRIP_ID,
+            ownerId: d.ownerId || '',
+            name: d.name || 'Deelnemer',
+            isDriver: Boolean(d.isDriver),
+            carSeats: Number(d.carSeats) || 0,
+            bikeSpots: Number(d.bikeSpots) || 0,
+            notes: d.notes || '',
+            createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : new Date().toISOString(),
+            updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : new Date().toISOString(),
+          };
+        });
+        setCloudParticipants(items);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'participants');
+      }
+    );
+
     return () => {
       unsubHouses();
       unsubIdeas();
+      unsubParticipants();
     };
   }, [isAuthReady, currentUser]);
 
@@ -377,7 +441,14 @@ function MainApplication() {
     return localIdeas;
   }, [currentUser, cloudIdeas, localIdeas]);
 
-  // Seed initial houses & ideas to Firestore when signed in
+  const activeParticipants: ParticipantRecord[] = useMemo(() => {
+    if (currentUser && cloudParticipants && cloudParticipants.length > 0) {
+      return cloudParticipants;
+    }
+    return localParticipants;
+  }, [currentUser, cloudParticipants, localParticipants]);
+
+  // Seed initial houses, ideas & participants to Firestore when signed in
   const handleSyncStarterDataToCloud = async () => {
     if (!currentUser) return;
     try {
@@ -396,9 +467,10 @@ function MainApplication() {
           totalPrice: Math.round(Number(h.totalPrice)),
           bedrooms: Math.round(Number(h.bedrooms)),
           bathrooms: Math.round(Number(h.bathrooms)),
-          hasBikeStorage: Boolean(h.hasBikeStorage),
-          hasBikeWash: Boolean(h.hasBikeWash),
-          hasSaunaJacuzzi: Boolean(h.hasSaunaJacuzzi),
+          hasBbq: Boolean(h.hasBbq),
+          hasFireplace: Boolean(h.hasFireplace),
+          hasJacuzzi: Boolean(h.hasJacuzzi),
+          hasSauna: Boolean(h.hasSauna),
           routeUrl: (h.routeUrl || '').slice(0, VALIDATION_CONSTRAINTS.URL_MAX),
           notes: (h.notes || '').slice(0, VALIDATION_CONSTRAINTS.NOTES_MAX),
           addedBy: h.addedBy.slice(0, VALIDATION_CONSTRAINTS.NAME_MAX),
@@ -424,7 +496,24 @@ function MainApplication() {
           updatedAt: serverTimestamp(),
         });
       }
-      showToast('De huisjes en ideeën staan nu live in de gedeelde Cloud-database!');
+
+      const sourceParticipants = localParticipants.length > 0 ? localParticipants : INITIAL_PARTICIPANTS;
+      for (const p of sourceParticipants) {
+        const pId = sanitizeId(p.id);
+        await setDoc(doc(db, 'participants', pId), {
+          tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
+          ownerId: currentUser.uid,
+          name: p.name.slice(0, VALIDATION_CONSTRAINTS.NAME_MAX),
+          isDriver: Boolean(p.isDriver),
+          carSeats: Math.max(0, Math.min(15, Math.round(Number(p.carSeats) || 0))),
+          bikeSpots: Math.max(0, Math.min(15, Math.round(Number(p.bikeSpots) || 0))),
+          notes: (p.notes || '').slice(0, 300),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      showToast('De huisjes, deelnemers en ideeën staan nu live in de gedeelde Cloud-database!');
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'houses');
     }
@@ -444,9 +533,10 @@ function MainApplication() {
   const displayedHouses = useMemo(() => {
     return activeHouses
       .filter((h) => {
-        if (facilityFilter === 'stalling' && !h.hasBikeStorage) return false;
-        if (facilityFilter === 'afspuitplek' && !h.hasBikeWash) return false;
-        if (facilityFilter === 'wellness' && !h.hasSaunaJacuzzi) return false;
+        if (facilityFilter === 'bbq' && !h.hasBbq) return false;
+        if (facilityFilter === 'openhaard' && !h.hasFireplace) return false;
+        if (facilityFilter === 'jacuzzi' && !h.hasJacuzzi) return false;
+        if (facilityFilter === 'sauna' && !h.hasSauna) return false;
         if (searchQuery.trim()) {
           const q = searchQuery.toLowerCase();
           const match =
@@ -479,7 +569,6 @@ function MainApplication() {
     const nowIso = new Date().toISOString();
 
     if (editingHouseId) {
-      // Update existing house
       setLocalHouses((prev) =>
         prev.map((h) =>
           h.id === editingHouseId
@@ -504,9 +593,10 @@ function MainApplication() {
             totalPrice: houseData.totalPrice,
             bedrooms: houseData.bedrooms,
             bathrooms: houseData.bathrooms,
-            hasBikeStorage: houseData.hasBikeStorage,
-            hasBikeWash: houseData.hasBikeWash,
-            hasSaunaJacuzzi: houseData.hasSaunaJacuzzi,
+            hasBbq: houseData.hasBbq,
+            hasFireplace: houseData.hasFireplace,
+            hasJacuzzi: houseData.hasJacuzzi,
+            hasSauna: houseData.hasSauna,
             routeUrl: houseData.routeUrl,
             notes: houseData.notes,
             addedBy: houseData.addedBy,
@@ -564,9 +654,10 @@ function MainApplication() {
           totalPrice: newRecord.totalPrice,
           bedrooms: newRecord.bedrooms,
           bathrooms: newRecord.bathrooms,
-          hasBikeStorage: newRecord.hasBikeStorage,
-          hasBikeWash: newRecord.hasBikeWash,
-          hasSaunaJacuzzi: newRecord.hasSaunaJacuzzi,
+          hasBbq: newRecord.hasBbq,
+          hasFireplace: newRecord.hasFireplace,
+          hasJacuzzi: newRecord.hasJacuzzi,
+          hasSauna: newRecord.hasSauna,
           routeUrl: newRecord.routeUrl,
           notes: newRecord.notes,
           addedBy: newRecord.addedBy,
@@ -746,9 +837,10 @@ function MainApplication() {
           totalPrice: restored.totalPrice,
           bedrooms: restored.bedrooms,
           bathrooms: restored.bathrooms,
-          hasBikeStorage: restored.hasBikeStorage,
-          hasBikeWash: restored.hasBikeWash,
-          hasSaunaJacuzzi: restored.hasSaunaJacuzzi,
+          hasBbq: Boolean(restored.hasBbq),
+          hasFireplace: Boolean(restored.hasFireplace),
+          hasJacuzzi: Boolean(restored.hasJacuzzi),
+          hasSauna: Boolean(restored.hasSauna),
           routeUrl: restored.routeUrl || '',
           notes: restored.notes || '',
           addedBy: restored.addedBy,
@@ -797,6 +889,112 @@ function MainApplication() {
   const handleOpenEditHouse = (house: HouseRecord) => {
     setEditingHouse(house);
     setIsAddModalOpen(true);
+  };
+
+  // PARTICIPANTS & CARPOOL MANAGEMENT
+  const handleAddParticipant = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanName = participantName.trim().slice(0, VALIDATION_CONSTRAINTS.NAME_MAX);
+    if (!cleanName) return;
+
+    const pId = sanitizeId(`deelnemer-${Date.now()}`);
+    const nowIso = new Date().toISOString();
+    const seats = participantIsDriver ? Math.max(1, Math.min(15, Number(participantCarSeats) || 1)) : 0;
+    const bikes = participantIsDriver ? Math.max(0, Math.min(15, Number(participantBikeSpots) || 0)) : 0;
+    const cleanNotes = participantNotes.trim().slice(0, 300);
+
+    const newParticipant: ParticipantRecord = {
+      id: pId,
+      tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
+      ownerId: currentUser?.uid || 'local-user',
+      name: cleanName,
+      isDriver: participantIsDriver,
+      carSeats: seats,
+      bikeSpots: bikes,
+      notes: cleanNotes,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    setLocalParticipants((prev) => [...prev, newParticipant]);
+    setParticipantName('');
+    setParticipantNotes('');
+
+    if (currentUser) {
+      try {
+        await setDoc(doc(db, 'participants', pId), {
+          tripId: VALIDATION_CONSTRAINTS.TRIP_ID,
+          ownerId: currentUser.uid,
+          name: cleanName,
+          isDriver: participantIsDriver,
+          carSeats: seats,
+          bikeSpots: bikes,
+          notes: cleanNotes,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `participants/${pId}`);
+      }
+    }
+
+    showToast(`${cleanName} is toegevoegd aan de deelnemerslijst!`);
+  };
+
+  const handleUpdateParticipant = async (
+    participant: ParticipantRecord,
+    updates: Partial<Pick<ParticipantRecord, 'isDriver' | 'carSeats' | 'bikeSpots' | 'notes'>>
+  ) => {
+    const nextDriver = updates.isDriver !== undefined ? updates.isDriver : participant.isDriver;
+    const nextSeats = nextDriver
+      ? Math.max(1, Math.min(15, updates.carSeats !== undefined ? updates.carSeats : participant.carSeats || 3))
+      : 0;
+    const nextBikes = nextDriver
+      ? Math.max(0, Math.min(15, updates.bikeSpots !== undefined ? updates.bikeSpots : participant.bikeSpots))
+      : 0;
+    const nextNotes = updates.notes !== undefined ? updates.notes.slice(0, 300) : participant.notes;
+
+    const nowIso = new Date().toISOString();
+    setLocalParticipants((prev) =>
+      prev.map((p) =>
+        p.id === participant.id
+          ? {
+              ...p,
+              isDriver: nextDriver,
+              carSeats: nextSeats,
+              bikeSpots: nextBikes,
+              notes: nextNotes,
+              updatedAt: nowIso,
+            }
+          : p
+      )
+    );
+
+    if (currentUser && cloudParticipants && cloudParticipants.some((p) => p.id === participant.id)) {
+      try {
+        await updateDoc(doc(db, 'participants', participant.id), {
+          isDriver: nextDriver,
+          carSeats: nextSeats,
+          bikeSpots: nextBikes,
+          notes: nextNotes,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `participants/${participant.id}`);
+      }
+    }
+  };
+
+  const handleDeleteParticipant = async (participant: ParticipantRecord) => {
+    setLocalParticipants((prev) => prev.filter((p) => p.id !== participant.id));
+    if (currentUser && cloudParticipants && cloudParticipants.some((p) => p.id === participant.id)) {
+      try {
+        await deleteDoc(doc(db, 'participants', participant.id));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `participants/${participant.id}`);
+      }
+    }
+    showToast(`${participant.name} verwijderd van de deelnemerslijst.`);
   };
 
   // Delete an idea
@@ -892,6 +1090,12 @@ function MainApplication() {
     overig: 'Eten & Overig',
   };
 
+  // Totals for Participants & Cars
+  const totalParticipantsCount = activeParticipants.length;
+  const totalDriversCount = activeParticipants.filter((p) => p.isDriver).length;
+  const totalCarSeats = activeParticipants.reduce((sum, p) => sum + (p.isDriver ? p.carSeats : 0), 0);
+  const totalBikeSpots = activeParticipants.reduce((sum, p) => sum + (p.isDriver ? p.bikeSpots : 0), 0);
+
   return (
     <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-[#0F172A]">
       {/* Top Bar Contract: Strictly 3 zones separated by gap-8 */}
@@ -934,6 +1138,17 @@ function MainApplication() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveView('deelnemers')}
+            className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeView === 'deelnemers'
+                ? 'text-slate-900 underline decoration-[#FC4C02] decoration-2 underline-offset-8 font-semibold'
+                : ''
+            }`}
+          >
+            Deelnemers & Auto’s ({activeParticipants.length})
+          </button>
+          <button
+            type="button"
             onClick={() => setActiveView('ideeen')}
             className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               activeView === 'ideeen'
@@ -942,13 +1157,6 @@ function MainApplication() {
             }`}
           >
             Ideeënbord ({activeIdeas.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsShareModalOpen(true)}
-            className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            Deel op WhatsApp
           </button>
         </nav>
 
@@ -986,11 +1194,11 @@ function MainApplication() {
               Racefiets Weekend 2027 — Accommodatie & Route Planner
             </h1>
             <p className="text-xs sm:text-sm text-slate-300 max-w-3xl">
-              Samen vakantiehuizen aandragen, vergelijken op de kaart, live de kosten per fietser berekenen, stemmen op de groepsfavoriet en klimroutes uitwisselen.
+              Samen vakantiehuizen aandragen, vergelijken op de kaart, auto- en fietsindeling afstemmen en stemmen op de groepsfavoriet.
             </p>
           </div>
 
-          {/* Collaborator Identity & Cloud / WhatsApp Controls */}
+          {/* Collaborator Identity & Quick Action Controls */}
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
             <div className="flex items-center gap-2 bg-slate-800/90 border border-slate-700 rounded-lg px-3 py-1.5">
               <span className="text-[11px] text-slate-400 whitespace-nowrap">Jouw naam:</span>
@@ -1006,20 +1214,20 @@ function MainApplication() {
 
             <button
               type="button"
+              onClick={() => setActiveView('deelnemers')}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Car className="w-3.5 h-3.5 text-[#FC4C02]" />
+              Deelnemers & Auto’s ({activeParticipants.length})
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveView('beheren')}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <ListChecks className="w-3.5 h-3.5 text-[#FC4C02]" />
               Lijst Beheren ({activeHouses.length})
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setIsShareModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <MessageCircle className="w-3.5 h-3.5 text-[#FC4C02]" />
-              Deel op WhatsApp
             </button>
 
             {currentUser ? (
@@ -1031,7 +1239,7 @@ function MainApplication() {
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-[#FC4C02] text-white text-xs font-semibold hover:bg-[#E04300] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                   >
                     <Cloud className="w-3.5 h-3.5" />
-                    Zet huisjes in Cloud
+                    Zet data in Cloud
                   </button>
                 )}
                 <button
@@ -1095,22 +1303,22 @@ function MainApplication() {
         </div>
       )}
 
-      {/* Mobile View Switcher (Kaart & Huisjes vs Lijst Beheren vs Ideeënbord) */}
+      {/* Mobile View Switcher */}
       <div className="flex lg:hidden flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-white border-b border-slate-200">
         <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
           <button
             type="button"
             onClick={() => setActiveView('vergelijken')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               activeView === 'vergelijken' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
             }`}
           >
-            Kaart & Huisjes ({activeHouses.length})
+            Huisjes ({activeHouses.length})
           </button>
           <button
             type="button"
             onClick={() => setActiveView('beheren')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               activeView === 'beheren' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
             }`}
           >
@@ -1118,8 +1326,17 @@ function MainApplication() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveView('deelnemers')}
+            className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeView === 'deelnemers' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+            }`}
+          >
+            Auto’s ({activeParticipants.length})
+          </button>
+          <button
+            type="button"
             onClick={() => setActiveView('ideeen')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               activeView === 'ideeen' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
             }`}
           >
@@ -1163,7 +1380,7 @@ function MainApplication() {
       {/* VIEW 1: Kaart & Huisjes Vergelijken */}
       {activeView === 'vergelijken' && (
         <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-6 py-5 grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* LEFT COLUMN (Desktop 5 cols): Sticky Interactive Leaflet Map + Quick Idea Preview */}
+          {/* LEFT COLUMN (Desktop 5 cols): Sticky Interactive Leaflet Map + Quick Teasers */}
           <div
             className={`lg:col-span-5 lg:sticky lg:top-20 space-y-4 ${
               mobilePane === 'lijst' ? 'hidden lg:block' : 'block'
@@ -1179,23 +1396,25 @@ function MainApplication() {
               />
             </div>
 
-            {/* Compact Algemene Ideeën & Regio's Teaser Box below map */}
+            {/* Compact Deelnemers & Auto's Teaser Box below map */}
             <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center justify-between gap-4">
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
-                  <Lightbulb className="w-4 h-4 text-[#FC4C02] shrink-0" />
-                  <span>Algemene Ideeën & Regio’s ({activeIdeas.length})</span>
+                  <Car className="w-4 h-4 text-[#FC4C02] shrink-0" />
+                  <span>
+                    Deelnemers & Auto’s: {totalParticipantsCount} fietsers · {totalDriversCount} chauffeurs
+                  </span>
                 </div>
-                <p className="text-xs text-slate-500 truncate mt-0.5">
-                  {activeIdeas[0]?.text || 'Deel losse ideeën over routes, fietsendragers of regio’s.'}
+                <p className="text-xs text-slate-500 truncate mt-0.5 font-mono-num">
+                  Capaciteit: {totalCarSeats} zitplaatsen in auto’s · {totalBikeSpots} fietsplekken
                 </p>
               </div>
               <button
                 type="button"
-                onClick={() => setActiveView('ideeen')}
+                onClick={() => setActiveView('deelnemers')}
                 className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-900 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
               >
-                Open Ideeënbord →
+                Indeling →
               </button>
             </div>
           </div>
@@ -1265,14 +1484,15 @@ function MainApplication() {
 
               {/* Filter & Sort Controls Bar */}
               <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                {/* Facility filter segmented buttons */}
+                {/* Extra's filter segmented buttons */}
                 <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto">
                   {(
                     [
                       { id: 'alle', label: 'Alle huisjes' },
-                      { id: 'stalling', label: 'Fietsenstalling' },
-                      { id: 'afspuitplek', label: 'Afspuitplek' },
-                      { id: 'wellness', label: 'Sauna / Jacuzzi' },
+                      { id: 'bbq', label: 'BBQ plaats' },
+                      { id: 'openhaard', label: 'Open haard' },
+                      { id: 'jacuzzi', label: 'Jacuzzi' },
+                      { id: 'sauna', label: 'Sauna' },
                     ] as { id: FacilityFilter; label: string }[]
                   ).map((tab) => (
                     <button
@@ -1563,7 +1783,7 @@ function MainApplication() {
                               {house.title}
                             </h3>
 
-                            {/* Facility metadata line (clean unboxed text with separators) */}
+                            {/* Kamers & Extra's metadata line (clean unboxed text with separators) */}
                             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 mt-2">
                               <span className="inline-flex items-center gap-1 font-medium text-slate-800">
                                 <BedDouble className="w-3.5 h-3.5 text-slate-500" />
@@ -1574,33 +1794,43 @@ function MainApplication() {
                                 <Bath className="w-3.5 h-3.5 text-slate-500" />
                                 <span className="tabular-nums">{house.bathrooms}</span> badkamers
                               </span>
-                              <span aria-hidden="true">·</span>
-                              <span
-                                className={`inline-flex items-center gap-1 ${
-                                  house.hasBikeStorage ? 'text-emerald-700 font-medium' : 'text-slate-400 line-through'
-                                }`}
-                              >
-                                <ShieldCheck className="w-3.5 h-3.5" />
-                                Fietsenstalling
-                              </span>
-                              <span aria-hidden="true">·</span>
-                              <span
-                                className={`inline-flex items-center gap-1 ${
-                                  house.hasBikeWash ? 'text-emerald-700 font-medium' : 'text-slate-400 line-through'
-                                }`}
-                              >
-                                <Droplets className="w-3.5 h-3.5" />
-                                Afspuitplek
-                              </span>
-                              <span aria-hidden="true">·</span>
-                              <span
-                                className={`inline-flex items-center gap-1 ${
-                                  house.hasSaunaJacuzzi ? 'text-emerald-700 font-medium' : 'text-slate-400 line-through'
-                                }`}
-                              >
-                                <Flame className="w-3.5 h-3.5" />
-                                Sauna/Jacuzzi
-                              </span>
+
+                              {house.hasBbq && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
+                                    <UtensilsCrossed className="w-3.5 h-3.5" />
+                                    BBQ plaats
+                                  </span>
+                                </>
+                              )}
+                              {house.hasFireplace && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
+                                    <Flame className="w-3.5 h-3.5" />
+                                    Open haard
+                                  </span>
+                                </>
+                              )}
+                              {house.hasJacuzzi && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
+                                    <Waves className="w-3.5 h-3.5" />
+                                    Jacuzzi
+                                  </span>
+                                </>
+                              )}
+                              {house.hasSauna && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">
+                                    <ThermometerSun className="w-3.5 h-3.5" />
+                                    Sauna
+                                  </span>
+                                </>
+                              )}
                             </div>
 
                             {/* Notes & Known Climbs */}
@@ -1913,7 +2143,7 @@ function MainApplication() {
                     <tr className="border-b border-slate-200 text-slate-500 bg-slate-50/50">
                       <th className="py-3 px-4 font-semibold">Naam & Locatie</th>
                       <th className="py-3 px-4 font-semibold">Door</th>
-                      <th className="py-3 px-4 font-semibold">Kamers</th>
+                      <th className="py-3 px-4 font-semibold">Kamers & Extra’s</th>
                       <th className="py-3 px-4 font-semibold text-right">Totaalprijs</th>
                       <th className="py-3 px-4 font-semibold text-right">Prijs p.p. ({cyclistCount}p)</th>
                       <th className="py-3 px-4 font-semibold text-right">Stemmen</th>
@@ -1924,6 +2154,12 @@ function MainApplication() {
                     {activeHouses.map((house) => {
                       const pp = Math.round(house.totalPrice / Math.max(1, cyclistCount));
                       const isFav = house.id === favoriteHouseId && house.voteScore > 0;
+                      const extras: string[] = [];
+                      if (house.hasBbq) extras.push('BBQ');
+                      if (house.hasFireplace) extras.push('Open haard');
+                      if (house.hasJacuzzi) extras.push('Jacuzzi');
+                      if (house.hasSauna) extras.push('Sauna');
+
                       return (
                         <tr key={house.id} className="hover:bg-slate-50 transition-colors">
                           <td className="py-3.5 px-4">
@@ -1947,8 +2183,11 @@ function MainApplication() {
                           <td className="py-3.5 px-4 font-medium text-slate-700 whitespace-nowrap">
                             {house.addedBy}
                           </td>
-                          <td className="py-3.5 px-4 text-slate-600 font-mono-num whitespace-nowrap">
-                            {house.bedrooms} slpk · {house.bathrooms} badk
+                          <td className="py-3.5 px-4 text-slate-600 whitespace-nowrap">
+                            <div className="font-mono-num">{house.bedrooms} slpk · {house.bathrooms} badk</div>
+                            {extras.length > 0 && (
+                              <div className="text-[11px] text-emerald-700">{extras.join(' · ')}</div>
+                            )}
                           </td>
                           <td className="py-3.5 px-4 text-right font-mono-num font-semibold text-slate-900 whitespace-nowrap">
                             €{house.totalPrice}
@@ -1997,7 +2236,381 @@ function MainApplication() {
         </main>
       )}
 
-      {/* VIEW 3: Algemene Ideeën & Regio's Board */}
+      {/* VIEW 3: Deelnemers, Chauffeurs & Auto-indeling */}
+      {activeView === 'deelnemers' && (
+        <main className="flex-1 max-w-[1280px] w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+          {/* Header Card */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-bold text-slate-900 font-display uppercase">
+                Deelnemers, Chauffeurs & Auto-indeling
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-600">
+                Zet je naam op de lijst en geef aan of je chauffeur wilt zijn, hoeveel mensen er mee kunnen in je auto en hoeveel racefietsen je kunt vervoeren.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {totalParticipantsCount >= 2 && totalParticipantsCount !== cyclistCount && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCyclistCount(totalParticipantsCount);
+                    showToast(`Prijs-calculator ingesteld op ${totalParticipantsCount} deelnemers!`);
+                  }}
+                  className="px-3.5 py-2 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 cursor-pointer"
+                >
+                  Zet prijscalculator op {totalParticipantsCount} fietsers
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setActiveView('vergelijken')}
+                className="px-3.5 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-800 hover:bg-slate-50 cursor-pointer"
+              >
+                ← Terug naar Kaart & Huisjes
+              </button>
+            </div>
+          </div>
+
+          {/* Live Capacity Summary Strip */}
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+            <div className="bg-white rounded-xl border border-slate-200 p-4">
+              <div className="text-xs text-slate-500 font-medium">Aangemelde deelnemers</div>
+              <div className="text-2xl font-bold font-mono-num text-slate-900 mt-1">
+                {totalParticipantsCount} personen
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                {totalDriversCount} chauffeurs · {Math.max(0, totalParticipantsCount - totalDriversCount)} meerijders
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 p-4">
+              <div className="text-xs text-slate-500 font-medium">Aantal auto’s (Chauffeurs)</div>
+              <div className="text-2xl font-bold font-mono-num text-slate-900 mt-1">
+                {totalDriversCount} auto’s
+              </div>
+              <div className="text-[11px] text-slate-500 mt-1">
+                Chauffeurs die kunnen rijden
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 p-4">
+              <div className="text-xs text-slate-500 font-medium">Zitplaatsen in auto’s</div>
+              <div className="text-2xl font-bold font-mono-num mt-1 flex items-center gap-2">
+                <span
+                  className={
+                    totalCarSeats >= totalParticipantsCount ? 'text-emerald-700' : 'text-amber-600'
+                  }
+                >
+                  {totalCarSeats} / {totalParticipantsCount} plekken
+                </span>
+              </div>
+              <div className="text-[11px] mt-1 flex items-center gap-1">
+                {totalCarSeats >= totalParticipantsCount ? (
+                  <span className="text-emerald-700 font-medium flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Iedereen kan mee in de auto!
+                  </span>
+                ) : (
+                  <span className="text-amber-700 font-medium flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5" /> Nog {totalParticipantsCount - totalCarSeats} zitplaats(en) nodig
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 p-4">
+              <div className="text-xs text-slate-500 font-medium">Plek voor racefietsen</div>
+              <div className="text-2xl font-bold font-mono-num mt-1 flex items-center gap-2">
+                <span
+                  className={
+                    totalBikeSpots >= totalParticipantsCount ? 'text-emerald-700' : 'text-amber-600'
+                  }
+                >
+                  {totalBikeSpots} / {totalParticipantsCount} fietsen
+                </span>
+              </div>
+              <div className="text-[11px] mt-1 flex items-center gap-1">
+                {totalBikeSpots >= totalParticipantsCount ? (
+                  <span className="text-emerald-700 font-medium flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Alle racefietsen passen mee!
+                  </span>
+                ) : (
+                  <span className="text-amber-700 font-medium flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5" /> Nog {totalParticipantsCount - totalBikeSpots} fietsplek(ken) nodig
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Main Grid: Add Participant Form + Participants Table */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            {/* Left 4 cols: Add Participant Form */}
+            <form
+              onSubmit={handleAddParticipant}
+              className="lg:col-span-4 bg-white rounded-xl border border-slate-200 p-5 space-y-4"
+            >
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <Car className="w-4 h-4 text-[#FC4C02]" />
+                Deelnemer Toevoegen aan Lijst
+              </h3>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Naam deelnemer *
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={VALIDATION_CONSTRAINTS.NAME_MAX}
+                  value={participantName}
+                  onChange={(e) => setParticipantName(e.target.value)}
+                  placeholder="Bijv. Martijn"
+                  className="w-full px-3.5 py-2 rounded-lg border border-slate-300 text-xs text-slate-900 focus:border-[#FC4C02] focus:outline-hidden"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Wil je chauffeur zijn (met eigen auto rijden)?
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setParticipantIsDriver(true);
+                      if (participantCarSeats === 0) setParticipantCarSeats(3);
+                      if (participantBikeSpots === 0) setParticipantBikeSpots(2);
+                    }}
+                    className={`py-2 px-3 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                      participantIsDriver
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    Ja, ik kan rijden 🚗
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setParticipantIsDriver(false);
+                      setParticipantCarSeats(0);
+                      setParticipantBikeSpots(0);
+                    }}
+                    className={`py-2 px-3 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                      !participantIsDriver
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    Nee, ik rijd mee
+                  </button>
+                </div>
+              </div>
+
+              {participantIsDriver && (
+                <div className="grid grid-cols-2 gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Mensen in de auto (incl. jijzelf)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={9}
+                      value={participantCarSeats}
+                      onChange={(e) => setParticipantCarSeats(Number(e.target.value))}
+                      className="w-full px-3 py-1.5 bg-white rounded-lg border border-slate-300 font-mono-num text-xs text-slate-900 focus:border-[#FC4C02] focus:outline-hidden"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Aantal fietsen dat mee kan
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={10}
+                      value={participantBikeSpots}
+                      onChange={(e) => setParticipantBikeSpots(Number(e.target.value))}
+                      className="w-full px-3 py-1.5 bg-white rounded-lg border border-slate-300 font-mono-num text-xs text-slate-900 focus:border-[#FC4C02] focus:outline-hidden"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Opmerking / Vertrekplaats (optioneel)
+                </label>
+                <input
+                  type="text"
+                  maxLength={300}
+                  value={participantNotes}
+                  onChange={(e) => setParticipantNotes(e.target.value)}
+                  placeholder="Bijv. Fietsendrager voor 3 fietsen, vertrek uit Utrecht"
+                  className="w-full px-3.5 py-2 rounded-lg border border-slate-300 text-xs text-slate-900 focus:border-[#FC4C02] focus:outline-hidden"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-2.5 rounded-lg bg-[#FC4C02] hover:bg-[#E04300] text-white text-xs font-semibold transition-colors cursor-pointer"
+              >
+                + Deelnemer Toevoegen
+              </button>
+            </form>
+
+            {/* Right 8 cols: Interactive Participants Table */}
+            <div className="lg:col-span-8 bg-white rounded-xl border border-slate-200 overflow-hidden">
+              <div className="px-5 py-3.5 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-800">
+                  Deelnemerslijst ({activeParticipants.length} personen) — Klik op getallen om direct aan te passen
+                </span>
+              </div>
+
+              {activeParticipants.length === 0 ? (
+                <div className="p-10 text-center space-y-2">
+                  <p className="text-sm font-semibold text-slate-800">Nog geen deelnemers op de lijst.</p>
+                  <p className="text-xs text-slate-500">Voeg hiernaast je naam toe om de auto-indeling te maken.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-slate-500 bg-slate-50/50">
+                        <th className="py-3 px-4 font-semibold">Naam deelnemer</th>
+                        <th className="py-3 px-4 font-semibold">Chauffeur?</th>
+                        <th className="py-3 px-4 font-semibold text-center">Mensen in auto</th>
+                        <th className="py-3 px-4 font-semibold text-center">Fietsen mee</th>
+                        <th className="py-3 px-4 font-semibold">Opmerking</th>
+                        <th className="py-3 px-4 font-semibold text-right">Actie</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {activeParticipants.map((p) => (
+                        <tr key={p.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="py-3.5 px-4 font-bold text-slate-900 text-sm whitespace-nowrap">
+                            {p.name}
+                          </td>
+
+                          {/* Toggle Driver status directly */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleUpdateParticipant(p, {
+                                  isDriver: !p.isDriver,
+                                  carSeats: !p.isDriver ? 3 : 0,
+                                  bikeSpots: !p.isDriver ? 2 : 0,
+                                })
+                              }
+                              className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                                p.isDriver
+                                  ? 'bg-slate-900 text-white'
+                                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                              }`}
+                            >
+                              {p.isDriver ? 'Ja, chauffeur 🚗' : 'Nee, meerijder'}
+                            </button>
+                          </td>
+
+                          {/* Car seats counter */}
+                          <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                            {p.isDriver ? (
+                              <div className="inline-flex items-center gap-1.5 font-mono-num">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleUpdateParticipant(p, {
+                                      carSeats: Math.max(1, p.carSeats - 1),
+                                    })
+                                  }
+                                  className="w-6 h-6 rounded border border-slate-300 hover:bg-slate-100 font-bold text-slate-700 cursor-pointer"
+                                >
+                                  −
+                                </button>
+                                <span className="w-12 text-center font-bold text-slate-900">
+                                  {p.carSeats} pers.
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleUpdateParticipant(p, {
+                                      carSeats: Math.min(9, p.carSeats + 1),
+                                    })
+                                  }
+                                  className="w-6 h-6 rounded border border-slate-300 hover:bg-slate-100 font-bold text-slate-700 cursor-pointer"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-slate-400">–</span>
+                            )}
+                          </td>
+
+                          {/* Bike spots counter */}
+                          <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                            {p.isDriver ? (
+                              <div className="inline-flex items-center gap-1.5 font-mono-num">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleUpdateParticipant(p, {
+                                      bikeSpots: Math.max(0, p.bikeSpots - 1),
+                                    })
+                                  }
+                                  className="w-6 h-6 rounded border border-slate-300 hover:bg-slate-100 font-bold text-slate-700 cursor-pointer"
+                                >
+                                  −
+                                </button>
+                                <span className="w-14 text-center font-bold text-[#FC4C02]">
+                                  {p.bikeSpots} fietsen
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleUpdateParticipant(p, {
+                                      bikeSpots: Math.min(10, p.bikeSpots + 1),
+                                    })
+                                  }
+                                  className="w-6 h-6 rounded border border-slate-300 hover:bg-slate-100 font-bold text-slate-700 cursor-pointer"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-slate-400">–</span>
+                            )}
+                          </td>
+
+                          <td className="py-3.5 px-4 text-slate-600 max-w-[220px] truncate">
+                            {p.notes || <span className="text-slate-400">–</span>}
+                          </td>
+
+                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteParticipant(p)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-red-600 hover:bg-red-50 font-medium cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Verwijder
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </main>
+      )}
+
+      {/* VIEW 4: Algemene Ideeën & Regio's Board */}
       {activeView === 'ideeen' && (
         <main className="flex-1 max-w-[1140px] w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-xl border border-slate-200">
@@ -2006,7 +2619,7 @@ function MainApplication() {
                 Algemene Ideeën, Regio’s & Logistiek
               </h2>
               <p className="text-xs sm:text-sm text-slate-600">
-                Plek voor suggesties die nog niet aan één specifiek huisje hangen: regio-voorkeuren, beklimmingen, GPX-routes, auto-indeling en fietsendragers.
+                Plek voor suggesties die nog niet aan één specifiek huisje hangen: regio-voorkeuren, beklimmingen, GPX-routes en afspraken.
               </p>
             </div>
             <button
@@ -2069,7 +2682,7 @@ function MainApplication() {
                   maxLength={VALIDATION_CONSTRAINTS.IDEA_MAX}
                   value={ideaText}
                   onChange={(e) => setIdeaText(e.target.value)}
-                  placeholder="Bijv. Zullen we dit jaar naar de Vogezen gaan? Of: Wie neemt de fietsendrager mee?"
+                  placeholder="Bijv. Zullen we dit jaar naar de Vogezen gaan? Of: Wie maakt vrijdag de pasta?"
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs text-slate-900 focus:border-[#FC4C02] focus:outline-hidden"
                 />
               </div>
@@ -2148,10 +2761,10 @@ function MainApplication() {
             </button>
             <button
               type="button"
-              onClick={() => setIsShareModalOpen(true)}
+              onClick={() => setActiveView('deelnemers')}
               className="hover:text-slate-900 underline cursor-pointer"
             >
-              Deel op WhatsApp
+              Deelnemers & Auto’s
             </button>
             <button
               type="button"
@@ -2167,7 +2780,7 @@ function MainApplication() {
         </div>
       </footer>
 
-      {/* Modals */}
+      {/* Modal */}
       <AddHouseModal
         isOpen={isAddModalOpen}
         onClose={() => {
@@ -2178,13 +2791,6 @@ function MainApplication() {
         cyclistCount={cyclistCount}
         defaultUserName={friendName}
         editingHouse={editingHouse}
-      />
-
-      <ShareDataModal
-        isOpen={isShareModalOpen}
-        onClose={() => setIsShareModalOpen(false)}
-        houses={activeHouses}
-        cyclistCount={cyclistCount}
       />
     </div>
   );

@@ -40,14 +40,14 @@ service cloud.firestore {
       return data.keys().hasAll([
         'tripId', 'ownerId', 'title', 'url', 'photoUrl', 'locationName',
         'lat', 'lng', 'totalPrice', 'bedrooms', 'bathrooms',
-        'hasBikeStorage', 'hasBikeWash', 'hasSaunaJacuzzi',
+        'hasBbq', 'hasFireplace', 'hasJacuzzi', 'hasSauna',
         'routeUrl', 'notes', 'addedBy', 'voteScore', 'voteCount',
         'status', 'createdAt', 'updatedAt'
       ]) &&
       data.keys().hasOnly([
         'tripId', 'ownerId', 'title', 'url', 'photoUrl', 'locationName',
         'lat', 'lng', 'totalPrice', 'bedrooms', 'bathrooms',
-        'hasBikeStorage', 'hasBikeWash', 'hasSaunaJacuzzi',
+        'hasBbq', 'hasFireplace', 'hasJacuzzi', 'hasSauna',
         'routeUrl', 'notes', 'addedBy', 'voteScore', 'voteCount',
         'status', 'createdAt', 'updatedAt'
       ]) &&
@@ -62,9 +62,10 @@ service cloud.firestore {
       data.totalPrice is number && data.totalPrice > 0 && data.totalPrice <= 50000 &&
       data.bedrooms is int && data.bedrooms >= 1 && data.bedrooms <= 50 &&
       data.bathrooms is int && data.bathrooms >= 1 && data.bathrooms <= 50 &&
-      data.hasBikeStorage is bool &&
-      data.hasBikeWash is bool &&
-      data.hasSaunaJacuzzi is bool &&
+      data.hasBbq is bool &&
+      data.hasFireplace is bool &&
+      data.hasJacuzzi is bool &&
+      data.hasSauna is bool &&
       data.routeUrl is string && data.routeUrl.size() <= 500 &&
       data.notes is string && data.notes.size() <= 1000 &&
       data.addedBy is string && data.addedBy.size() >= 1 && data.addedBy.size() <= 60 &&
@@ -128,6 +129,24 @@ service cloud.firestore {
       data.updatedAt is timestamp;
     }
 
+    function isValidParticipant(data) {
+      return data.keys().hasAll([
+        'tripId', 'ownerId', 'name', 'isDriver', 'carSeats', 'bikeSpots', 'notes', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'tripId', 'ownerId', 'name', 'isDriver', 'carSeats', 'bikeSpots', 'notes', 'createdAt', 'updatedAt'
+      ]) &&
+      data.tripId is string && data.tripId.size() == 14 && data.tripId.matches('^racefiets-2027$') &&
+      data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.name is string && data.name.size() >= 1 && data.name.size() <= 60 &&
+      data.isDriver is bool &&
+      data.carSeats is int && data.carSeats >= 0 && data.carSeats <= 15 &&
+      data.bikeSpots is int && data.bikeSpots >= 0 && data.bikeSpots <= 15 &&
+      data.notes is string && data.notes.size() <= 300 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
     // 4. Collection Rules: /houses/{houseId}
     match /houses/{houseId} {
       allow get: if isVerifiedUser() && isValidId(houseId) && resource.data.tripId == 'racefiets-2027';
@@ -149,15 +168,15 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
-          // Action 1: Owner edits house details while active
+          // Action 1: Verified group member or owner edits house details while active
           (
             existing().status == 'active' &&
-            existing().ownerId == request.auth.uid &&
+            existing().tripId == 'racefiets-2027' &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'title', 'url', 'photoUrl', 'locationName', 'lat', 'lng',
-              'totalPrice', 'bedrooms', 'bathrooms', 'hasBikeStorage',
-              'hasBikeWash', 'hasSaunaJacuzzi', 'routeUrl', 'notes',
-              'status', 'updatedAt'
+              'totalPrice', 'bedrooms', 'bathrooms', 'hasBbq',
+              'hasFireplace', 'hasJacuzzi', 'hasSauna', 'routeUrl',
+              'notes', 'addedBy', 'status', 'updatedAt'
             ])
           ) ||
           // Action 2: Group member updates vote aggregates atomically with their vote document
@@ -170,7 +189,7 @@ service cloud.firestore {
 
       allow delete: if isVerifiedUser() &&
         isValidId(houseId) &&
-        (existing().ownerId == request.auth.uid || isAdmin());
+        (existing().tripId == 'racefiets-2027' || existing().ownerId == request.auth.uid || isAdmin());
 
       // Subcollection: /houses/{houseId}/votes/{voteId}
       match /votes/{voteId} {
@@ -270,7 +289,40 @@ service cloud.firestore {
 
       allow delete: if isVerifiedUser() &&
         isValidId(ideaId) &&
-        (existing().authorId == request.auth.uid || isAdmin());
+        (existing().tripId == 'racefiets-2027' || existing().authorId == request.auth.uid || isAdmin());
+    }
+
+    // 6. Collection Rules: /participants/{participantId}
+    match /participants/{participantId} {
+      allow get: if isVerifiedUser() && isValidId(participantId) && resource.data.tripId == 'racefiets-2027';
+      allow list: if isVerifiedUser() && resource.data.tripId == 'racefiets-2027';
+
+      allow create: if isVerifiedUser() &&
+        isValidId(participantId) &&
+        isValidParticipant(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(participantId) &&
+        isValidParticipant(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().tripId == existing().tripId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            existing().tripId == 'racefiets-2027' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'isDriver', 'carSeats', 'bikeSpots', 'notes', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isVerifiedUser() &&
+        isValidId(participantId) &&
+        (existing().tripId == 'racefiets-2027' || existing().ownerId == request.auth.uid || isAdmin());
     }
   }
 }

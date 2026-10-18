@@ -7,14 +7,17 @@ import {
   Euro,
   BedDouble,
   Bath,
-  ShieldCheck,
-  Droplets,
   Flame,
+  Waves,
+  ThermometerSun,
+  UtensilsCrossed,
   Route,
   User,
   ExternalLink,
   Check,
   AlertCircle,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { HouseRecord } from '../types';
 import { VALIDATION_CONSTRAINTS } from '../firebase';
@@ -66,12 +69,19 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
   const [totalPrice, setTotalPrice] = useState<string>('1600');
   const [bedrooms, setBedrooms] = useState<string>('5');
   const [bathrooms, setBathrooms] = useState<string>('3');
-  const [hasBikeStorage, setHasBikeStorage] = useState<boolean>(true);
-  const [hasBikeWash, setHasBikeWash] = useState<boolean>(true);
-  const [hasSaunaJacuzzi, setHasSaunaJacuzzi] = useState<boolean>(false);
+
+  // Extra's: BBQ plaats, Open haard, Jacuzzi, Sauna
+  const [hasBbq, setHasBbq] = useState<boolean>(true);
+  const [hasFireplace, setHasFireplace] = useState<boolean>(false);
+  const [hasJacuzzi, setHasJacuzzi] = useState<boolean>(false);
+  const [hasSauna, setHasSauna] = useState<boolean>(false);
+
   const [routeUrl, setRouteUrl] = useState('');
   const [notes, setNotes] = useState('');
   const [addedBy, setAddedBy] = useState(defaultUserName || 'Jasper');
+
+  // Optional section toggle to keep the modal super clean & uncluttered
+  const [showOptionalFields, setShowOptionalFields] = useState(false);
 
   const [isSearchingGeo, setIsSearchingGeo] = useState(false);
   const [geoResults, setGeoResults] = useState<NominatimResult[]>([]);
@@ -100,12 +110,14 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
       setTotalPrice(String(editingHouse.totalPrice));
       setBedrooms(String(editingHouse.bedrooms));
       setBathrooms(String(editingHouse.bathrooms));
-      setHasBikeStorage(editingHouse.hasBikeStorage);
-      setHasBikeWash(editingHouse.hasBikeWash);
-      setHasSaunaJacuzzi(editingHouse.hasSaunaJacuzzi);
+      setHasBbq(Boolean(editingHouse.hasBbq));
+      setHasFireplace(Boolean(editingHouse.hasFireplace));
+      setHasJacuzzi(Boolean(editingHouse.hasJacuzzi));
+      setHasSauna(Boolean(editingHouse.hasSauna));
       setRouteUrl(editingHouse.routeUrl || '');
       setNotes(editingHouse.notes || '');
       setAddedBy(editingHouse.addedBy || defaultUserName || 'Jasper');
+      setShowOptionalFields(Boolean(editingHouse.photoUrl || editingHouse.routeUrl));
     } else {
       setTitle('');
       setUrl('');
@@ -116,12 +128,14 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
       setTotalPrice('1600');
       setBedrooms('5');
       setBathrooms('3');
-      setHasBikeStorage(true);
-      setHasBikeWash(true);
-      setHasSaunaJacuzzi(false);
+      setHasBbq(true);
+      setHasFireplace(false);
+      setHasJacuzzi(false);
+      setHasSauna(false);
       setRouteUrl('');
       setNotes('');
       setAddedBy(defaultUserName || 'Jasper');
+      setShowOptionalFields(false);
     }
   }, [isOpen, editingHouse, defaultUserName]);
 
@@ -183,7 +197,7 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
         setLat(clickedLat);
         setLng(clickedLng);
         marker.setLatLng([clickedLat, clickedLng]);
-        setGeoMessage(`Pin handmatig geplaatst op ${clickedLat}, ${clickedLng}`);
+        setGeoMessage(`Pin geplaatst op ${clickedLat}, ${clickedLng}`);
       });
 
       miniMapRef.current = map;
@@ -204,7 +218,7 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
   const handleNominatimSearch = async () => {
     const queryText = locationName.trim();
     if (queryText.length < 2) {
-      setGeoMessage('Voer eerst een plaatsnaam, dorp of adres in (bijv. "Houffalize" of "Valkenburg").');
+      setGeoMessage('Voer eerst een plaatsnaam of dorp in (bijv. "Houffalize" of "Valkenburg").');
       return;
     }
 
@@ -228,7 +242,7 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
 
       const data: NominatimResult[] = await response.json();
       if (!data || data.length === 0) {
-        setGeoMessage('Geen locatie gevonden. Probeer een ander dorp of klik direct op de kaart hieronder.');
+        setGeoMessage('Geen locatie gevonden. Probeer een ander dorp of klik op de kaart.');
       } else {
         const first = data[0];
         const parsedLat = Number(parseFloat(first.lat).toFixed(5));
@@ -243,7 +257,7 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
         }
       }
     } catch {
-      setGeoMessage('Zoeken via OpenStreetMap tijdelijk niet bereikbaar. Klik op de kaart om handmatig een pin te zetten.');
+      setGeoMessage('Klik op de kaart hieronder om de locatie aan te wijzen.');
     } finally {
       setIsSearchingGeo(false);
     }
@@ -307,7 +321,7 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
       return;
     }
     if (cleanLoc.length < VALIDATION_CONSTRAINTS.LOCATION_MIN) {
-      setFormError('Vul het dorp, de regio of het adres van het huisje in.');
+      setFormError('Vul het dorp of de regio van het huisje in.');
       return;
     }
     if (!parsedPrice || parsedPrice <= 0 || parsedPrice > 50000) {
@@ -336,9 +350,10 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
           totalPrice: Math.round(parsedPrice),
           bedrooms: parsedBeds,
           bathrooms: parsedBaths,
-          hasBikeStorage,
-          hasBikeWash,
-          hasSaunaJacuzzi,
+          hasBbq,
+          hasFireplace,
+          hasJacuzzi,
+          hasSauna,
           routeUrl: cleanRouteUrl,
           notes: cleanNotes,
           addedBy: cleanAddedBy,
@@ -355,15 +370,15 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-3 sm:p-6 overflow-y-auto">
-      <div className="relative w-full max-w-2xl bg-white rounded-xl border border-slate-200 shadow-xl my-auto max-h-[92vh] flex flex-col overflow-hidden">
+      <div className="relative w-full max-w-xl bg-white rounded-xl border border-slate-200 shadow-xl my-auto max-h-[92vh] flex flex-col overflow-hidden">
         {/* Modal Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50/70">
           <div>
             <h2 className="text-xl font-bold tracking-tight text-slate-900">
-              {editingHouse ? 'Vakantiehuis Bewerken' : 'Nieuw Vakantiehuis Aandragen'}
+              {editingHouse ? 'Vakantiehuis Bewerken' : 'Nieuw Vakantiehuis Toevoegen'}
             </h2>
             <p className="text-xs text-slate-500">
-              Donderdag 27 mei t/m zondag 30 mei 2027 (3 nachten)
+              Vul de basisgegevens in — de prijs per persoon wordt direct berekend
             </p>
           </div>
           <button
@@ -385,46 +400,45 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
             </div>
           )}
 
-          {/* Row 1: Title & Added By */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="sm:col-span-2">
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Naam / Titel van het huisje *
-              </label>
-              <input
-                type="text"
-                required
-                maxLength={VALIDATION_CONSTRAINTS.TITLE_MAX}
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Bijv. Chalet La Redoute in Remouchamps"
-                className="w-full px-3.5 py-2 rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden text-slate-900"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Toegevoegd door *
-              </label>
-              <div className="relative">
-                <User className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+          {/* 1. Basisgegevens */}
+          <div className="space-y-3.5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Naam van het huisje *
+                </label>
                 <input
                   type="text"
                   required
-                  maxLength={VALIDATION_CONSTRAINTS.NAME_MAX}
-                  value={addedBy}
-                  onChange={(e) => setAddedBy(e.target.value)}
-                  placeholder="Jouw naam"
-                  className="w-full pl-9 pr-3.5 py-2 rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden text-slate-900"
+                  maxLength={VALIDATION_CONSTRAINTS.TITLE_MAX}
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Bijv. Chalet La Redoute"
+                  className="w-full px-3.5 py-2 rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden text-slate-900"
                 />
               </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Toegevoegd door *
+                </label>
+                <div className="relative">
+                  <User className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    required
+                    maxLength={VALIDATION_CONSTRAINTS.NAME_MAX}
+                    value={addedBy}
+                    onChange={(e) => setAddedBy(e.target.value)}
+                    placeholder="Jouw naam"
+                    className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden text-slate-900"
+                  />
+                </div>
+              </div>
             </div>
-          </div>
 
-          {/* Row 2: Accommodation Link & Photo URL */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Link naar accommodatie (Airbnb, Booking, Belvilla) *
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Link naar het huisje (Airbnb, Booking, Belvilla, etc.) *
               </label>
               <div className="relative">
                 <ExternalLink className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
@@ -439,245 +453,268 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
                 />
               </div>
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Foto URL (optioneel — anders racefiets/chalet illustratie)
-              </label>
-              <input
-                type="text"
-                maxLength={VALIDATION_CONSTRAINTS.URL_MAX}
-                value={photoUrl}
-                onChange={(e) => setPhotoUrl(e.target.value)}
-                placeholder="https://.../foto.jpg (optioneel)"
-                className="w-full px-3.5 py-2 rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden text-slate-900"
-              />
-            </div>
           </div>
 
-          {/* Row 3: Location / Nominatim Geocoder + Mini Map Pin Picker */}
-          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-end gap-2.5">
-              <div className="flex-1">
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                  Locatie / Dorp / Adres *
+          {/* 2. Prijs & Kamers */}
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Totaalprijs weekend (€) *
                 </label>
                 <div className="relative">
-                  <MapPin className="w-4 h-4 text-[#FC4C02] absolute left-3 top-2.5" />
+                  <Euro className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
                   <input
-                    type="text"
+                    type="number"
                     required
-                    maxLength={VALIDATION_CONSTRAINTS.LOCATION_MAX}
-                    value={locationName}
-                    onChange={(e) => setLocationName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        handleNominatimSearch();
-                      }
-                    }}
-                    placeholder="Bijv. Houffalize, Valkenburg of Malmedy"
-                    className="w-full pl-9 pr-3.5 py-2 bg-white rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden text-slate-900"
+                    min={1}
+                    max={50000}
+                    value={totalPrice}
+                    onChange={(e) => setTotalPrice(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-white rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden font-mono-num text-slate-900"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Slaapkamers *
+                </label>
+                <div className="relative">
+                  <BedDouble className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="number"
+                    required
+                    min={1}
+                    max={50}
+                    value={bedrooms}
+                    onChange={(e) => setBedrooms(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-white rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden font-mono-num text-slate-900"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Badkamers *
+                </label>
+                <div className="relative">
+                  <Bath className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="number"
+                    required
+                    min={1}
+                    max={50}
+                    value={bathrooms}
+                    onChange={(e) => setBathrooms(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-white rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden font-mono-num text-slate-900"
+                  />
+                </div>
+              </div>
+            </div>
+            <p className="text-xs font-mono-num text-[#FC4C02] font-medium pt-0.5">
+              Omrekening bij {cyclistCount} fietsers: €{previewPerPerson} p.p. voor het weekend (€{previewPerNightPP} p.p. per nacht)
+            </p>
+          </div>
+
+          {/* 3. Locatie op de kaart */}
+          <div className="space-y-2.5">
+            <label className="block text-xs font-semibold text-slate-700">
+              Locatie / Dorp *
+            </label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <MapPin className="w-4 h-4 text-[#FC4C02] absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  required
+                  maxLength={VALIDATION_CONSTRAINTS.LOCATION_MAX}
+                  value={locationName}
+                  onChange={(e) => setLocationName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleNominatimSearch();
+                    }
+                  }}
+                  placeholder="Bijv. La Roche-en-Ardenne, Valkenburg of Monschau"
+                  className="w-full pl-9 pr-3.5 py-2 rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden text-slate-900"
+                />
               </div>
               <button
                 type="button"
                 onClick={handleNominatimSearch}
                 disabled={isSearchingGeo}
-                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-[#0F172A] text-white text-xs font-semibold hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#0F172A] text-white text-xs font-semibold hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
               >
                 <Search className="w-3.5 h-3.5" />
                 {isSearchingGeo ? 'Zoeken...' : 'Zoek op kaart'}
               </button>
             </div>
 
-            {/* Nominatim search suggestions */}
             {geoResults.length > 1 && (
-              <div className="bg-white rounded-lg border border-slate-200 divide-y divide-slate-100 text-xs">
+              <div className="bg-slate-50 rounded-lg border border-slate-200 divide-y divide-slate-200/60 text-xs">
                 {geoResults.map((res) => (
                   <button
                     key={res.place_id}
                     type="button"
                     onClick={() => handleSelectGeoResult(res)}
-                    className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center justify-between gap-2 cursor-pointer"
+                    className="w-full text-left px-3 py-1.5 hover:bg-slate-100 flex items-center justify-between gap-2 cursor-pointer"
                   >
                     <span className="truncate text-slate-700">{res.display_name}</span>
-                    <span className="text-[#FC4C02] font-mono-num shrink-0">Kies pin</span>
+                    <span className="text-[#FC4C02] font-semibold shrink-0">Kies</span>
                   </button>
                 ))}
               </div>
             )}
 
-            {geoMessage && (
-              <p className="text-xs text-slate-600 flex items-center justify-between">
-                <span>{geoMessage}</span>
-                <span className="font-mono-num text-slate-500">
-                  {lat.toFixed(4)}°N, {lng.toFixed(4)}°E
-                </span>
-              </p>
-            )}
+            {geoMessage && <p className="text-xs text-slate-600">{geoMessage}</p>}
 
-            {/* Mini interactive map for manual pin placement */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-[11px] text-slate-500">
-                <span>Klik direct op de kaart om handmatig de pin te verplaatsen:</span>
-                <span className="font-mono-num">
-                  GPS: {lat.toFixed(4)}, {lng.toFixed(4)}
-                </span>
-              </div>
+            <div className="space-y-1">
               <div
                 ref={miniMapContainerRef}
-                className="w-full h-44 rounded-lg border border-slate-300 overflow-hidden"
+                className="w-full h-36 rounded-lg border border-slate-300 overflow-hidden"
               />
-            </div>
-          </div>
-
-          {/* Row 4: Price, Bedrooms, Bathrooms + Live Calculator Preview */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Totaalprijs weekend (€) *
-              </label>
-              <div className="relative">
-                <Euro className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                <input
-                  type="number"
-                  required
-                  min={1}
-                  max={50000}
-                  value={totalPrice}
-                  onChange={(e) => setTotalPrice(e.target.value)}
-                  className="w-full pl-9 pr-3.5 py-2 rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden font-mono-num text-slate-900"
-                />
-              </div>
-              <p className="text-[11px] font-mono-num text-[#FC4C02] mt-1">
-                ≈ €{previewPerPerson} p.p. (€{previewPerNightPP}/nacht bij {cyclistCount} pers.)
+              <p className="text-[11px] text-slate-500">
+                Tip: je kunt ook direct op de kaart klikken om het pinnetje handmatig te zetten.
               </p>
             </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Aantal slaapkamers *
-              </label>
-              <div className="relative">
-                <BedDouble className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                <input
-                  type="number"
-                  required
-                  min={1}
-                  max={50}
-                  value={bedrooms}
-                  onChange={(e) => setBedrooms(e.target.value)}
-                  className="w-full pl-9 pr-3.5 py-2 rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden font-mono-num text-slate-900"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Aantal badkamers *
-              </label>
-              <div className="relative">
-                <Bath className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                <input
-                  type="number"
-                  required
-                  min={1}
-                  max={50}
-                  value={bathrooms}
-                  onChange={(e) => setBathrooms(e.target.value)}
-                  className="w-full pl-9 pr-3.5 py-2 rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden font-mono-num text-slate-900"
-                />
-              </div>
-            </div>
           </div>
 
-          {/* Row 5: Racefiets-checklists (Booleans) */}
+          {/* 4. Extra's (BBQ plaats, Open Haard, Jacuzzi, Sauna) */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-2">
-              Racefiets-checklists & Faciliteiten
+              Extra’s bij het huisje
             </label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               <button
                 type="button"
-                onClick={() => setHasBikeStorage((v) => !v)}
-                className={`flex items-center justify-between px-3.5 py-2.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
-                  hasBikeStorage
+                onClick={() => setHasBbq((v) => !v)}
+                className={`flex items-center justify-between px-3 py-2.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                  hasBbq
                     ? 'bg-slate-900 text-white border-slate-900'
                     : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
                 }`}
               >
-                <span className="flex items-center gap-2 truncate">
-                  <ShieldCheck className="w-4 h-4 text-[#FC4C02] shrink-0" />
-                  <span className="truncate">Afsluitbare stalling</span>
+                <span className="flex items-center gap-1.5 truncate">
+                  <UtensilsCrossed className="w-3.5 h-3.5 text-[#FC4C02] shrink-0" />
+                  <span className="truncate">BBQ plaats</span>
                 </span>
-                {hasBikeStorage && <Check className="w-4 h-4 shrink-0" />}
+                {hasBbq && <Check className="w-3.5 h-3.5 shrink-0" />}
               </button>
 
               <button
                 type="button"
-                onClick={() => setHasBikeWash((v) => !v)}
-                className={`flex items-center justify-between px-3.5 py-2.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
-                  hasBikeWash
+                onClick={() => setHasFireplace((v) => !v)}
+                className={`flex items-center justify-between px-3 py-2.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                  hasFireplace
                     ? 'bg-slate-900 text-white border-slate-900'
                     : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
                 }`}
               >
-                <span className="flex items-center gap-2 truncate">
-                  <Droplets className="w-4 h-4 text-[#FC4C02] shrink-0" />
-                  <span className="truncate">Afspuitplek / slang</span>
+                <span className="flex items-center gap-1.5 truncate">
+                  <Flame className="w-3.5 h-3.5 text-[#FC4C02] shrink-0" />
+                  <span className="truncate">Open haard</span>
                 </span>
-                {hasBikeWash && <Check className="w-4 h-4 shrink-0" />}
+                {hasFireplace && <Check className="w-3.5 h-3.5 shrink-0" />}
               </button>
 
               <button
                 type="button"
-                onClick={() => setHasSaunaJacuzzi((v) => !v)}
-                className={`flex items-center justify-between px-3.5 py-2.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
-                  hasSaunaJacuzzi
+                onClick={() => setHasJacuzzi((v) => !v)}
+                className={`flex items-center justify-between px-3 py-2.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                  hasJacuzzi
                     ? 'bg-slate-900 text-white border-slate-900'
                     : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
                 }`}
               >
-                <span className="flex items-center gap-2 truncate">
-                  <Flame className="w-4 h-4 text-[#FC4C02] shrink-0" />
-                  <span className="truncate">Sauna / Jacuzzi</span>
+                <span className="flex items-center gap-1.5 truncate">
+                  <Waves className="w-3.5 h-3.5 text-[#FC4C02] shrink-0" />
+                  <span className="truncate">Jacuzzi</span>
                 </span>
-                {hasSaunaJacuzzi && <Check className="w-4 h-4 shrink-0" />}
+                {hasJacuzzi && <Check className="w-3.5 h-3.5 shrink-0" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setHasSauna((v) => !v)}
+                className={`flex items-center justify-between px-3 py-2.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                  hasSauna
+                    ? 'bg-slate-900 text-white border-slate-900'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                <span className="flex items-center gap-1.5 truncate">
+                  <ThermometerSun className="w-3.5 h-3.5 text-[#FC4C02] shrink-0" />
+                  <span className="truncate">Sauna</span>
+                </span>
+                {hasSauna && <Check className="w-3.5 h-3.5 shrink-0" />}
               </button>
             </div>
           </div>
 
-          {/* Row 6: Route URL & Notes */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Link naar een fietsroute in de buurt (optioneel — Strava of Komoot)
-            </label>
-            <div className="relative">
-              <Route className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-              <input
-                type="text"
-                maxLength={VALIDATION_CONSTRAINTS.URL_MAX}
-                value={routeUrl}
-                onChange={(e) => setRouteUrl(e.target.value)}
-                placeholder="https://www.strava.com/routes/... of https://www.komoot.com/..."
-                className="w-full pl-9 pr-3.5 py-2 rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden text-slate-900"
+          {/* 5. Toelichting & Optionele velden */}
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Korte toelichting / opmerkingen (optioneel)
+              </label>
+              <textarea
+                rows={2}
+                maxLength={VALIDATION_CONSTRAINTS.NOTES_MAX}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Bijv. Ligt mooi op een heuvel, grote tuin met lange tafel, klimmetjes om de hoek..."
+                className="w-full px-3.5 py-2 rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden text-slate-900"
               />
             </div>
-          </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Toelichting / Opmerkingen & Beklimmingen in de buurt
-            </label>
-            <textarea
-              rows={3}
-              maxLength={VALIDATION_CONSTRAINTS.NOTES_MAX}
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Bijv. Ligt aan de voet van La Redoute, grote garage voor 10 fietsen, 8 losse bedden..."
-              className="w-full px-3.5 py-2 rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden text-slate-900"
-            />
+            <button
+              type="button"
+              onClick={() => setShowOptionalFields((v) => !v)}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+            >
+              {showOptionalFields ? (
+                <ChevronUp className="w-3.5 h-3.5 text-[#FC4C02]" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 text-[#FC4C02]" />
+              )}
+              <span>Extra opties: Foto-link of Fietsroute-link toevoegen (optioneel)</span>
+            </button>
+
+            {showOptionalFields && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Foto URL (optioneel)
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={VALIDATION_CONSTRAINTS.URL_MAX}
+                    value={photoUrl}
+                    onChange={(e) => setPhotoUrl(e.target.value)}
+                    placeholder="https://.../foto.jpg"
+                    className="w-full px-3 py-1.5 bg-white rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden text-xs text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Fietsroute link (Strava / Komoot)
+                  </label>
+                  <div className="relative">
+                    <Route className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2" />
+                    <input
+                      type="text"
+                      maxLength={VALIDATION_CONSTRAINTS.URL_MAX}
+                      value={routeUrl}
+                      onChange={(e) => setRouteUrl(e.target.value)}
+                      placeholder="https://www.strava.com/routes/..."
+                      className="w-full pl-8 pr-3 py-1.5 bg-white rounded-lg border border-slate-300 focus:border-[#FC4C02] focus:outline-hidden text-xs text-slate-900"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Actions */}
@@ -698,7 +735,7 @@ export const AddHouseModal: React.FC<AddHouseModalProps> = ({
                 ? 'Bezig met opslaan...'
                 : editingHouse
                 ? 'Wijzigingen Opslaan'
-                : 'Huisje Toevoegen aan Kaart'}
+                : 'Huisje Toevoegen'}
             </button>
           </div>
         </form>

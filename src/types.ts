@@ -30,9 +30,10 @@ export interface HouseRecord {
   totalPrice: number;
   bedrooms: number;
   bathrooms: number;
-  hasBikeStorage: boolean;
-  hasBikeWash: boolean;
-  hasSaunaJacuzzi: boolean;
+  hasBbq: boolean;
+  hasFireplace: boolean;
+  hasJacuzzi: boolean;
+  hasSauna: boolean;
   routeUrl: string;
   notes: string;
   addedBy: string;
@@ -58,5 +59,18 @@ export interface GeneralIdeaRecord {
   updatedAt: string;
 }
 
+export interface ParticipantRecord {
+  id: string;
+  tripId: string;
+  ownerId: string;
+  name: string;
+  isDriver: boolean;
+  carSeats: number;
+  bikeSpots: number;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type SortOption = 'populariteit' | 'prijs_oplopend' | 'slaapkamers';
-export type FacilityFilter = 'alle' | 'stalling' | 'afspuitplek' | 'wellness';
+export type FacilityFilter = 'alle' | 'bbq' | 'openhaard' | 'jacuzzi' | 'sauna';
