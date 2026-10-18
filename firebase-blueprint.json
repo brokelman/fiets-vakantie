@@ -1,0 +1,341 @@
+{
+  "entities": {
+    "House": {
+      "title": "House",
+      "description": "Een aangedragen vakantiehuis voor het Racefiets Weekend 2027.",
+      "type": "object",
+      "properties": {
+        "tripId": {
+          "type": "string",
+          "description": "Vaste identifier van het groepsweekend.",
+          "pattern": "^racefiets-2027$",
+          "minLength": 14,
+          "maxLength": 14
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID van de gebruiker die het huisje heeft toegevoegd.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "description": "Naam of titel van het vakantiehuis.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "url": {
+          "type": "string",
+          "description": "Externe link naar Airbnb, Booking, Belvilla of eigen website.",
+          "pattern": "^https?://.+",
+          "minLength": 8,
+          "maxLength": 500
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Optionele directe URL naar een foto van het huisje.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "locationName": {
+          "type": "string",
+          "description": "Dorp, stad of adres van het huisje.",
+          "minLength": 2,
+          "maxLength": 160
+        },
+        "lat": {
+          "type": "number",
+          "description": "Breedtegraad (GPS latitude)."
+        },
+        "lng": {
+          "type": "number",
+          "description": "Lengtegraad (GPS longitude)."
+        },
+        "totalPrice": {
+          "type": "number",
+          "description": "Totaalprijs in euro voor het volledige weekend (3 nachten)."
+        },
+        "bedrooms": {
+          "type": "number",
+          "description": "Aantal slaapkamers."
+        },
+        "bathrooms": {
+          "type": "number",
+          "description": "Aantal badkamers."
+        },
+        "hasBikeStorage": {
+          "type": "boolean",
+          "description": "Afsluitbare fietsenstalling aanwezig."
+        },
+        "hasBikeWash": {
+          "type": "boolean",
+          "description": "Afspuitplek of tuinslang aanwezig."
+        },
+        "hasSaunaJacuzzi": {
+          "type": "boolean",
+          "description": "Sauna of jacuzzi aanwezig."
+        },
+        "routeUrl": {
+          "type": "string",
+          "description": "Optionele link naar een Strava of Komoot route in de buurt.",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "notes": {
+          "type": "string",
+          "description": "Toelichting, opmerkingen of bekende beklimmingen in de buurt.",
+          "minLength": 0,
+          "maxLength": 1000
+        },
+        "addedBy": {
+          "type": "string",
+          "description": "Weergavenaam van de vriend die het huisje heeft aangedragen.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "voteScore": {
+          "type": "number",
+          "description": "Geaggregeerde stemscore van de groep."
+        },
+        "voteCount": {
+          "type": "number",
+          "description": "Totaal aantal uitgebrachte stemmen."
+        },
+        "status": {
+          "type": "string",
+          "description": "Status van de accommodatie-optie.",
+          "enum": ["active", "archived"],
+          "minLength": 6,
+          "maxLength": 8
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Aanmaaktijdstip op de server."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Laatste wijzigingstijdstip op de server."
+        }
+      },
+      "required": [
+        "tripId",
+        "ownerId",
+        "title",
+        "url",
+        "photoUrl",
+        "locationName",
+        "lat",
+        "lng",
+        "totalPrice",
+        "bedrooms",
+        "bathrooms",
+        "hasBikeStorage",
+        "hasBikeWash",
+        "hasSaunaJacuzzi",
+        "routeUrl",
+        "notes",
+        "addedBy",
+        "voteScore",
+        "voteCount",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "HouseVote": {
+      "title": "HouseVote",
+      "description": "Stem of sterrenbeoordeling van een groepslid op een specifiek vakantiehuis.",
+      "type": "object",
+      "properties": {
+        "houseId": {
+          "type": "string",
+          "description": "ID van het vakantiehuis.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID van de stemmer.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "voterName": {
+          "type": "string",
+          "description": "Naam van de vriend die stemt.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "value": {
+          "type": "number",
+          "description": "Stemwaarde (-1 of +1 t/m +5)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Tijdstip van stemmen."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Tijdstip van laatste wijziging."
+        }
+      },
+      "required": [
+        "houseId",
+        "userId",
+        "voterName",
+        "value",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "HouseComment": {
+      "title": "HouseComment",
+      "description": "Reactie van een vriend op een specifiek vakantiehuis.",
+      "type": "object",
+      "properties": {
+        "houseId": {
+          "type": "string",
+          "description": "ID van het gekoppelde vakantiehuis.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "authorId": {
+          "type": "string",
+          "description": "UID van de auteur.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Weergavenaam van de auteur.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "text": {
+          "type": "string",
+          "description": "Inhoud van de opmerking.",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Aanmaaktijdstip op de server."
+        }
+      },
+      "required": [
+        "houseId",
+        "authorId",
+        "authorName",
+        "text",
+        "createdAt"
+      ]
+    },
+    "GeneralIdea": {
+      "title": "GeneralIdea",
+      "description": "Algemeen idee, regio-suggestie of logistieke afspraak op het ideeënbord.",
+      "type": "object",
+      "properties": {
+        "tripId": {
+          "type": "string",
+          "description": "Vaste identifier van het groepsweekend.",
+          "pattern": "^racefiets-2027$",
+          "minLength": 14,
+          "maxLength": 14
+        },
+        "authorId": {
+          "type": "string",
+          "description": "UID van de auteur.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Weergavenaam van de vriend.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "category": {
+          "type": "string",
+          "description": "Categorie van het idee.",
+          "enum": ["regio", "route", "logistiek", "overig"],
+          "minLength": 5,
+          "maxLength": 10
+        },
+        "text": {
+          "type": "string",
+          "description": "Toelichting of voorstel.",
+          "minLength": 2,
+          "maxLength": 600
+        },
+        "likesCount": {
+          "type": "number",
+          "description": "Aantal stemmen op dit idee."
+        },
+        "status": {
+          "type": "string",
+          "description": "Status van het idee.",
+          "enum": ["open", "resolved"],
+          "minLength": 4,
+          "maxLength": 8
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Aanmaaktijdstip op de server."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Laatste wijzigingstijdstip op de server."
+        }
+      },
+      "required": [
+        "tripId",
+        "authorId",
+        "authorName",
+        "category",
+        "text",
+        "likesCount",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/houses/{houseId}": {
+      "schema": {
+        "$ref": "#/entities/House"
+      },
+      "description": "Collectie van aangedragen vakantiehuizen voor Racefiets Weekend 2027."
+    },
+    "/houses/{houseId}/votes/{voteId}": {
+      "schema": {
+        "$ref": "#/entities/HouseVote"
+      },
+      "description": "Subcollectie met individuele stemmen per vakantiehuis."
+    },
+    "/houses/{houseId}/comments/{commentId}": {
+      "schema": {
+        "$ref": "#/entities/HouseComment"
+      },
+      "description": "Subcollectie met reacties per vakantiehuis."
+    },
+    "/ideas/{ideaId}": {
+      "schema": {
+        "$ref": "#/entities/GeneralIdea"
+      },
+      "description": "Collectie van algemene ideeën, regio-suggesties en logistieke notities."
+    }
+  }
+}

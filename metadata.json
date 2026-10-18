@@ -1,0 +1,6 @@
+{
+  "name": "Kopgroep '27 — Racefiets Weekend Planner",
+  "description": "Samen vakantiehuizen aandragen, vergelijken op de kaart, prijzen per fietser berekenen, stemmen en routes delen voor het Racefiets Weekend 2027 (27 t/m 30 mei 2027).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
