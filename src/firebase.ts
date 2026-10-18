@@ -1,10 +1,13 @@
 import { initializeApp } from 'firebase/app';
 import {
   getAuth,
+  getRedirectResult,
   GoogleAuthProvider,
   OAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
+  UserCredential,
 } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseAppletConfig from '../firebase-applet-config.json';
@@ -86,21 +89,107 @@ async function testConnection() {
 
 testConnection();
 
-export async function signInWithGoogle() {
+export async function signInWithGooglePopup(): Promise<UserCredential> {
   return signInWithPopup(auth, googleProvider);
 }
 
-export async function signInWithApple() {
+export async function signInWithGoogleRedirect(): Promise<void> {
+  return signInWithRedirect(auth, googleProvider);
+}
+
+export async function signInWithApplePopup(): Promise<UserCredential> {
   return signInWithPopup(auth, appleProvider);
 }
 
-export async function logOutUser() {
+export async function signInWithAppleRedirect(): Promise<void> {
+  return signInWithRedirect(auth, appleProvider);
+}
+
+export async function checkAuthRedirectResult(): Promise<UserCredential | null> {
+  return getRedirectResult(auth);
+}
+
+export async function logOutUser(): Promise<void> {
   return signOut(auth);
+}
+
+export interface ClassifiedAuthError {
+  code:
+    | 'unauthorized-domain'
+    | 'popup-closed'
+    | 'popup-blocked'
+    | 'operation-not-allowed'
+    | 'network-error'
+    | 'unknown';
+  title: string;
+  message: string;
+  rawMessage: string;
+}
+
+export function classifyAuthError(err: unknown, providerLabel: 'Google' | 'Apple'): ClassifiedAuthError {
+  const rawMessage = err instanceof Error ? err.message : String(err);
+
+  if (rawMessage.includes('auth/unauthorized-domain')) {
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'supermannen.netlify.app';
+    return {
+      code: 'unauthorized-domain',
+      title: `Domein (${hostname}) is nog niet vrijgegeven in Firebase Authentication`,
+      message: `Firebase blokkeert ${providerLabel} OAuth op "${hostname}" totdat dit domein eenmalig is toegevoegd onder Firebase Console → Authentication → Settings → Authorized domains (project: ${firebaseConfig.projectId}).`,
+      rawMessage,
+    };
+  }
+
+  if (
+    rawMessage.includes('auth/popup-closed-by-user') ||
+    rawMessage.includes('auth/cancelled-popup-request')
+  ) {
+    return {
+      code: 'popup-closed',
+      title: 'Inlogvenster tussentijds gesloten',
+      message: `Het ${providerLabel}-inlogvenster is gesloten voordat het inloggen was afgerond. Klik opnieuw om in te loggen of gebruik de Redirect-optie op mobiel.`,
+      rawMessage,
+    };
+  }
+
+  if (rawMessage.includes('auth/popup-blocked')) {
+    return {
+      code: 'popup-blocked',
+      title: 'Pop-up geblokkeerd door je browser (bijv. iPhone Safari)',
+      message: `Je browser heeft het pop-upvenster geblokkeerd. Gebruik hieronder de knop "Inloggen via Redirect (Mobiel / Safari)" om zonder pop-up in te loggen.`,
+      rawMessage,
+    };
+  }
+
+  if (rawMessage.includes('auth/operation-not-allowed')) {
+    return {
+      code: 'operation-not-allowed',
+      title: `${providerLabel} Sign-In is nog niet geactiveerd in Firebase`,
+      message: `Schakel ${providerLabel} in via Firebase Console → Authentication → Sign-in method (project: ${firebaseConfig.projectId}).`,
+      rawMessage,
+    };
+  }
+
+  if (rawMessage.includes('auth/network-request-failed')) {
+    return {
+      code: 'network-error',
+      title: 'Geen netwerkverbinding met Firebase Authentication',
+      message: 'Controleer je internetverbinding of eventuele adblockers/tracking-blokkades en probeer het opnieuw.',
+      rawMessage,
+    };
+  }
+
+  return {
+    code: 'unknown',
+    title: `Inloggen met ${providerLabel} niet gelukt`,
+    message: rawMessage,
+    rawMessage,
+  };
 }
 
 // Validation & sanitization helpers synchronized verbatim with firebase-blueprint.json & firestore.rules
 export const VALIDATION_CONSTRAINTS = {
   TRIP_ID: 'racefiets-2027',
+  TEST_TRIP_ID: 'racefiets-2027-test',
   ID_PATTERN: /^[a-zA-Z0-9_\-]+$/,
   URL_PATTERN: /^https?:\/\/.+/,
   TITLE_MIN: 2,

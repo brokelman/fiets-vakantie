@@ -55,7 +55,13 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
 
     mapInstanceRef.current = map;
 
+    const resizeObserver = new ResizeObserver(() => {
+      map.invalidateSize();
+    });
+    resizeObserver.observe(mapContainerRef.current);
+
     return () => {
+      resizeObserver.disconnect();
       map.remove();
       mapInstanceRef.current = null;
     };
@@ -281,7 +287,7 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       </div>
 
       {/* Map canvas */}
-      <div ref={mapContainerRef} className="w-full flex-1 min-h-[360px]" />
+      <div ref={mapContainerRef} className="w-full flex-1 min-h-[240px] sm:min-h-[360px]" />
     </div>
   );
 };

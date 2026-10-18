@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Bike,
   Calendar,
@@ -11,35 +11,55 @@ import {
   ShieldCheck,
   Copy,
   Check,
-  ArrowRight,
-  User,
-  Mail,
+  Eye,
+  Smartphone,
 } from 'lucide-react';
-import { firebaseConfig, signInWithApple, signInWithGoogle, VALIDATION_CONSTRAINTS } from '../firebase';
-
-export interface DirectMemberSession {
-  uid: string;
-  name: string;
-  email: string;
-  provider: 'google' | 'apple' | 'group';
-}
+import {
+  checkAuthRedirectResult,
+  ClassifiedAuthError,
+  classifyAuthError,
+  firebaseConfig,
+  signInWithApplePopup,
+  signInWithAppleRedirect,
+  signInWithGooglePopup,
+  signInWithGoogleRedirect,
+} from '../firebase';
 
 interface LoginPageProps {
-  onDirectLogin: (session: DirectMemberSession) => void;
+  onEnterGuestReadOnly: () => void;
+  isTestEnvironment: boolean;
 }
 
-export const LoginPage: React.FC<LoginPageProps> = ({ onDirectLogin }) => {
-  const [memberName, setMemberName] = useState('');
-  const [memberEmail, setMemberEmail] = useState('');
-  const [isLoadingGoogle, setIsLoadingGoogle] = useState(false);
-  const [isLoadingApple, setIsLoadingApple] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [showDomainHelp, setShowDomainHelp] = useState(false);
-  const [showAppleSetupGuide, setShowAppleSetupGuide] = useState(false);
+export const LoginPage: React.FC<LoginPageProps> = ({
+  onEnterGuestReadOnly,
+  isTestEnvironment,
+}) => {
+  const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
+  const [isSigningInGoogleRedirect, setIsSigningInGoogleRedirect] = useState(false);
+  const [isSigningInApple, setIsSigningInApple] = useState(false);
+  const [authError, setAuthError] = useState<ClassifiedAuthError | null>(null);
   const [copiedDomain, setCopiedDomain] = useState<string | null>(null);
+  const [showAdminDomainGuide, setShowAdminDomainGuide] = useState(false);
 
-  const currentHostname =
-    typeof window !== 'undefined' ? window.location.hostname : 'ais-pre-zc3aqv5carxpgdk7w2vaw4-81023049844.europe-west2.run.app';
+  const currentDomain =
+    typeof window !== 'undefined' ? window.location.hostname : 'supermannen.netlify.app';
+  const netlifyDomain = 'supermannen.netlify.app';
+
+  // Check if returning from a mobile OAuth redirect (signInWithRedirect)
+  useEffect(() => {
+    let active = true;
+    checkAuthRedirectResult().catch((err) => {
+      if (!active) return;
+      const classified = classifyAuthError(err, 'Google');
+      setAuthError(classified);
+      if (classified.code === 'unauthorized-domain') {
+        setShowAdminDomainGuide(true);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleCopyDomain = async (domain: string) => {
     try {
@@ -47,287 +67,312 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onDirectLogin }) => {
       setCopiedDomain(domain);
       window.setTimeout(() => setCopiedDomain(null), 2500);
     } catch {
-      // Ignore clipboard failure
+      // Clipboard fallback ignored
     }
   };
 
-  const handleQuickMemberSubmit = (
-    e: React.FormEvent,
-    providerType: 'google' | 'apple' | 'group' = 'group'
-  ) => {
-    e.preventDefault();
-    const cleanName = memberName.trim().slice(0, VALIDATION_CONSTRAINTS.NAME_MAX);
-    const cleanEmail = memberEmail.trim().toLowerCase();
-    if (!cleanName) {
-      setAuthError('Vul je voornaam in (bijv. Erik of Jasper) om in te loggen.');
-      return;
-    }
-
-    const uidSlug = (cleanEmail || cleanName)
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, '-')
-      .replace(/-+/g, '-')
-      .slice(0, 64);
-
-    onDirectLogin({
-      uid: `lid-${uidSlug || 'vriend'}`,
-      name: cleanName,
-      email: cleanEmail || `${cleanName.toLowerCase()}@kopgroep27.nl`,
-      provider: providerType,
-    });
-  };
-
-  const handleGoogleLogin = async () => {
+  const handleGooglePopup = async () => {
     setAuthError(null);
-    setShowDomainHelp(false);
-    setShowAppleSetupGuide(false);
-    setIsLoadingGoogle(true);
+    setIsSigningInGoogle(true);
     try {
-      await signInWithGoogle();
+      await signInWithGooglePopup();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('unauthorized-domain')) {
-        setShowDomainHelp(true);
-        setAuthError(
-          'Dit webadres staat nog niet in de "Authorized domains" lijst van Firebase voor de Google pop-up. Gebruik hieronder direct je naam & Google e-mailadres om meteen in te loggen op de centrale groepslijst, of voeg het domein toe in Firebase.'
-        );
-      } else if (msg.includes('popup-closed-by-user')) {
-        setAuthError('Het inlogvenster is gesloten voordat het inloggen was afgerond.');
-      } else if (msg.includes('popup-blocked')) {
-        setAuthError('Je browser blokkeerde het pop-upvenster. Gebruik het directe inlogveld hieronder.');
-      } else {
-        setAuthError(`Google pop-up melding: gebruik hieronder je naam om direct door te gaan.`);
+      const classified = classifyAuthError(err, 'Google');
+      setAuthError(classified);
+      if (classified.code === 'unauthorized-domain') {
+        setShowAdminDomainGuide(true);
       }
     } finally {
-      setIsLoadingGoogle(false);
+      setIsSigningInGoogle(false);
     }
   };
 
-  const handleAppleLogin = async () => {
+  const handleGoogleRedirect = async () => {
     setAuthError(null);
-    setShowDomainHelp(false);
-    setShowAppleSetupGuide(false);
-    setIsLoadingApple(true);
+    setIsSigningInGoogleRedirect(true);
     try {
-      await signInWithApple();
+      await signInWithGoogleRedirect();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('unauthorized-domain')) {
-        setShowDomainHelp(true);
-        setAuthError(
-          'Dit webadres staat nog niet bij de "Authorized domains" in Firebase. Gebruik hieronder direct je naam & Apple ID e-mailadres om meteen in te loggen op de centrale groepslijst.'
-        );
-      } else if (
-        msg.includes('operation-not-allowed') ||
-        msg.includes('configuration-not-found') ||
-        msg.includes('invalid-credential')
-      ) {
-        setShowAppleSetupGuide(true);
-        setAuthError(
-          'Apple ID pop-up vereist een Apple Developer koppeling in Firebase. Je kunt hieronder direct met je naam & Apple e-mailadres inloggen!'
-        );
-      } else if (msg.includes('popup-closed-by-user')) {
-        setAuthError('Het Apple ID inlogvenster is voortijdig gesloten.');
-      } else {
-        setAuthError('Gebruik hieronder je naam & e-mailadres om direct in te loggen.');
+      const classified = classifyAuthError(err, 'Google');
+      setAuthError(classified);
+      if (classified.code === 'unauthorized-domain') {
+        setShowAdminDomainGuide(true);
+      }
+      setIsSigningInGoogleRedirect(false);
+    }
+  };
+
+  const handleApplePopup = async () => {
+    setAuthError(null);
+    setIsSigningInApple(true);
+    try {
+      await signInWithApplePopup();
+    } catch (err: unknown) {
+      const classified = classifyAuthError(err, 'Apple');
+      setAuthError(classified);
+      if (classified.code === 'unauthorized-domain') {
+        setShowAdminDomainGuide(true);
       }
     } finally {
-      setIsLoadingApple(false);
+      setIsSigningInApple(false);
     }
   };
 
-  const firebaseAuthSettingsUrl = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`;
-  const firebaseProvidersUrl = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/providers`;
+  const handleAppleRedirect = async () => {
+    setAuthError(null);
+    setIsSigningInApple(true);
+    try {
+      await signInWithAppleRedirect();
+    } catch (err: unknown) {
+      const classified = classifyAuthError(err, 'Apple');
+      setAuthError(classified);
+      setIsSigningInApple(false);
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-[#0F172A] text-white flex flex-col justify-between relative overflow-hidden">
-      {/* Subtle topographic background lines */}
-      <svg
-        viewBox="0 0 1200 800"
-        className="absolute inset-0 w-full h-full object-cover opacity-15 pointer-events-none"
-        preserveAspectRatio="xMidYMid slice"
-        aria-hidden="true"
-      >
-        <g fill="none" stroke="#94A3B8" strokeWidth="1.2">
-          <path d="M-100,180 C250,90 550,290 900,150 C1050,90 1180,140 1300,110" />
-          <path d="M-100,280 C220,190 540,390 880,250 C1040,185 1170,240 1300,210" />
-          <path d="M-100,380 C200,290 530,490 860,350 C1030,280 1160,340 1300,310" />
-          <path d="M-100,480 C180,390 520,590 840,450 C1020,375 1150,440 1300,410" />
-          <path d="M-100,580 C160,490 510,690 820,550 C1010,470 1140,540 1300,510" />
-        </g>
-        <path
-          d="M0,720 L180,640 L340,665 L540,510 L710,560 L920,370 L1090,420 L1200,330"
-          fill="none"
-          stroke="#FC4C02"
-          strokeWidth="2.5"
-          strokeDasharray="6 6"
-        />
-      </svg>
-
-      {/* Top Header Bar */}
-      <header className="relative z-10 max-w-6xl w-full mx-auto px-4 sm:px-8 py-6 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-lg bg-[#FC4C02] flex items-center justify-center text-white">
-            <Bike className="w-5 h-5" />
+    <div className="min-h-screen bg-[#0F172A] text-white flex flex-col justify-between overflow-x-hidden">
+      {/* Top Bar */}
+      <header className="border-b border-slate-800 bg-[#0F172A]/90 backdrop-blur-md">
+        <div className="max-w-[1280px] mx-auto px-4 sm:px-6 py-3.5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-[#FC4C02] flex items-center justify-center shrink-0">
+              <Bike className="w-4 h-4 text-white" />
+            </div>
+            <span className="text-lg sm:text-xl font-bold tracking-tight font-display uppercase text-white truncate">
+              Kopgroep ’27
+            </span>
           </div>
-          <span className="text-xl font-bold tracking-tight font-display uppercase text-white">
-            Kopgroep ’27
+          <span className="text-[11px] sm:text-xs text-slate-400 font-mono-num shrink-0">
+            {isTestEnvironment ? 'TESTOMGEVING (racefiets-2027-test)' : '27 – 30 mei 2027'}
           </span>
-        </div>
-        <div className="text-xs font-mono-num text-slate-300 flex items-center gap-2">
-          <Calendar className="w-3.5 h-3.5 text-[#FC4C02]" />
-          <span>Do 27 mei t/m zo 30 mei 2027 (3 nachten)</span>
         </div>
       </header>
 
-      {/* Main Content Split */}
-      <main className="relative z-10 max-w-6xl w-full mx-auto px-4 sm:px-8 py-6 grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center my-auto">
-        {/* Left Column: Event Context & Why Login */}
-        <div className="lg:col-span-7 space-y-6">
-          <div className="inline-flex items-center gap-2 text-xs font-semibold tracking-wider uppercase text-[#FC4C02]">
-            <span>Centrale Groepsplanner · Ardennen / Zuid-Limburg / Eifel</span>
-          </div>
-
-          <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold font-display uppercase tracking-tight leading-[1.03] text-white">
-            Racefiets Weekend 2027 — Samen het perfecte huisje kiezen
-          </h1>
-
-          <p className="text-sm sm:text-base text-slate-300 leading-relaxed max-w-xl">
-            Iedereen die hier inlogt kijkt naar <strong className="text-white">exact dezelfde centrale groepsdatabase</strong> op de server. Als jij de standaardlijst verwijdert en zelf een huisje toevoegt, ziet Erik direct precies datzelfde huisje.
-          </p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
-            <div className="bg-slate-800/70 border border-slate-700/80 rounded-xl p-4 space-y-1.5">
-              <div className="flex items-center gap-2 text-xs font-bold text-white">
-                <MapPin className="w-4 h-4 text-[#FC4C02] shrink-0" />
-                <span>1 Centrale Huisjeslijst</span>
+      {/* Main Split Login Layout */}
+      <main className="flex-1 flex items-center justify-center px-3 sm:px-6 py-6 sm:py-10">
+        <div className="max-w-[1060px] w-full grid grid-cols-1 lg:grid-cols-12 bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+          {/* Left Column: Event Context & Why Verified Auth */}
+          <div className="lg:col-span-6 p-5 sm:p-8 lg:p-10 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 flex flex-col justify-between space-y-6 border-b lg:border-b-0 lg:border-r border-slate-800">
+            <div className="space-y-4">
+              <div className="inline-flex items-center gap-2 text-xs font-semibold text-[#FC4C02] uppercase tracking-wider">
+                <Calendar className="w-3.5 h-3.5 shrink-0" />
+                <span>Donderdag 27 mei t/m zondag 30 mei 2027</span>
               </div>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                Geen losse lijsten meer per telefoon of laptop. Wat je toevoegt of verwijdert geldt direct voor iedereen.
+
+              <h1 className="text-2xl sm:text-4xl font-bold font-display uppercase tracking-tight text-white leading-none">
+                Racefiets Weekend 2027 — Gezamenlijke Huisjes & Auto-indeling
+              </h1>
+
+              <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                Log in met je geverifieerde Google- of Apple-account zodat iedereen in de groep (Hermen, Erik en de rest) altijd exact dezelfde realtime lijst in Firebase Firestore ziet en bewerkt.
               </p>
-            </div>
 
-            <div className="bg-slate-800/70 border border-slate-700/80 rounded-xl p-4 space-y-1.5">
-              <div className="flex items-center gap-2 text-xs font-bold text-white">
-                <Car className="w-4 h-4 text-[#FC4C02] shrink-0" />
-                <span>Chauffeurs & Fietsen</span>
-              </div>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                Zet je naam op de lijst en geef aan hoeveel personen en racefietsen er mee kunnen in je auto.
-              </p>
-            </div>
-
-            <div className="bg-slate-800/70 border border-slate-700/80 rounded-xl p-4 space-y-1.5">
-              <div className="flex items-center gap-2 text-xs font-bold text-white">
-                <Users className="w-4 h-4 text-[#FC4C02] shrink-0" />
-                <span>Live Stemmen & Prijzen</span>
-              </div>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                Bereken direct de prijs per fietser voor 3 nachten en stem samen op jullie groepsfavoriet.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column: Login Card */}
-        <div className="lg:col-span-5">
-          <div className="bg-white text-slate-900 rounded-2xl border border-slate-200 shadow-2xl p-6 sm:p-7 space-y-5">
-            <div className="space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold uppercase tracking-wider text-[#FC4C02]">
-                  Toegang Vriendengroep
-                </span>
-                <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  100% Gedeelde Lijst
-                </span>
-              </div>
-              <h2 className="text-2xl font-bold tracking-tight text-slate-900">
-                Inloggen bij Kopgroep ’27
-              </h2>
-              <p className="text-xs text-slate-500 leading-relaxed">
-                Log direct in met je naam & Google/Apple e-mailadres, of gebruik de OAuth-knoppen hieronder.
-              </p>
-            </div>
-
-            {/* Direct Member Login Form (Always works immediately without domain restrictions!) */}
-            <form
-              onSubmit={(e) => handleQuickMemberSubmit(e, 'group')}
-              className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3"
-            >
-              <div>
-                <label className="block text-xs font-bold text-slate-800 mb-1">
-                  Jouw voornaam in de groep *
-                </label>
-                <div className="relative">
-                  <User className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                  <input
-                    type="text"
-                    required
-                    maxLength={VALIDATION_CONSTRAINTS.NAME_MAX}
-                    value={memberName}
-                    onChange={(e) => setMemberName(e.target.value)}
-                    placeholder="Bijv. Jasper of Erik"
-                    className="w-full pl-9 pr-3 py-2 rounded-lg bg-white border border-slate-300 text-sm text-slate-900 focus:border-[#FC4C02] focus:outline-hidden"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">
-                  Google of Apple ID e-mailadres (optioneel)
-                </label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                  <input
-                    type="email"
-                    value={memberEmail}
-                    onChange={(e) => setMemberEmail(e.target.value)}
-                    placeholder="naam@gmail.com of @icloud.com"
-                    className="w-full pl-9 pr-3 py-2 rounded-lg bg-white border border-slate-300 text-xs text-slate-900 focus:border-[#FC4C02] focus:outline-hidden"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-[#FC4C02] hover:bg-[#E04300] text-white font-semibold text-sm transition-colors cursor-pointer shadow-xs"
-              >
-                <span>Open Centrale Groepslijst</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            </form>
-
-            <div className="relative flex py-1 items-center">
-              <div className="grow border-t border-slate-200"></div>
-              <span className="shrink-0 mx-3 text-[11px] font-medium text-slate-400 uppercase">
-                Of via pop-up venster
-              </span>
-              <div className="grow border-t border-slate-200"></div>
-            </div>
-
-            {authError && (
-              <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs space-y-2.5">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                  <span className="font-medium leading-relaxed">{authError}</span>
-                </div>
-
-                {showDomainHelp && (
-                  <div className="pl-6 space-y-2 text-[11px] text-slate-700 border-t border-amber-200/70 pt-2">
-                    <p className="font-semibold text-slate-900">
-                      Wil je de Google/Apple pop-up gebruiken? Voeg dit domein toe in Firebase:
+              <div className="space-y-3 pt-1">
+                <div className="flex items-start gap-3">
+                  <div className="w-7 h-7 rounded-lg bg-[#FC4C02]/15 text-[#FC4C02] flex items-center justify-center shrink-0 mt-0.5">
+                    <MapPin className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs sm:text-sm font-bold text-white">
+                      Eén centrale Firestore-lijst voor iedereen
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Geen losse browser-lijsten of automatische voorbeeldhuisjes meer: elke toevoeging of verwijdering is direct voor iedereen zichtbaar.
                     </p>
-                    <div className="flex items-center justify-between gap-2 bg-white px-2.5 py-1.5 rounded border border-amber-300 font-mono-num text-[11px]">
-                      <span className="truncate">{currentHostname}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-3">
+                  <div className="w-7 h-7 rounded-lg bg-[#FC4C02]/15 text-[#FC4C02] flex items-center justify-center shrink-0 mt-0.5">
+                    <Car className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs sm:text-sm font-bold text-white">
+                      Deelnemers, Chauffeurs & Fietsplekken (incl. 0 fietsen)
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Geef per auto het exacte aantal zitplaatsen en racefietsen op (ook 0 fietsen voor een bagage-/passagiersauto blijft exact 0).
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-3">
+                  <div className="w-7 h-7 rounded-lg bg-[#FC4C02]/15 text-[#FC4C02] flex items-center justify-center shrink-0 mt-0.5">
+                    <Users className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs sm:text-sm font-bold text-white">
+                      Geverifieerd eigenaarschap (UID)
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Wijzigingen, stemmen en reacties zijn gekoppeld aan je geverifieerde account-UID. Onbevestigde gasten hebben uitsluitend alleen-lezen toegang.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
+              <span className="inline-flex items-center gap-1.5 text-emerald-400 font-medium">
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                Firestore Project: {firebaseConfig.projectId}
+              </span>
+              <span>3 nachten · Ardennen / Limburg / Eifel</span>
+            </div>
+          </div>
+
+          {/* Right Column: Verified Google / Apple Login + Explicit Read-Only Guest Option */}
+          <div className="lg:col-span-6 p-5 sm:p-8 lg:p-10 bg-white text-slate-900 flex flex-col justify-center">
+            <div className="max-w-md mx-auto w-full space-y-5">
+              <div className="space-y-1">
+                <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#FC4C02] uppercase tracking-wider">
+                  <ShieldCheck className="w-4 h-4 shrink-0" />
+                  <span>Geverifieerde Groepslogin</span>
+                </div>
+                <h2 className="text-xl sm:text-2xl font-bold text-slate-900 font-display uppercase">
+                  Inloggen bij Kopgroep ’27
+                </h2>
+                <p className="text-xs text-slate-600">
+                  Log in met je Google-account of Apple ID om huisjes toe te voegen, te stemmen en de deelnemerslijst bij te werken.
+                </p>
+              </div>
+
+              {/* Primary Verified Login Buttons */}
+              <div className="space-y-2.5">
+                {/* 1. Google Sign-In (Pop-up) */}
+                <button
+                  type="button"
+                  onClick={handleGooglePopup}
+                  disabled={isSigningInGoogle || isSigningInGoogleRedirect || isSigningInApple}
+                  data-testid="login-google-popup-btn"
+                  className="w-full min-h-[46px] flex items-center justify-center gap-2.5 px-4 py-2.5 rounded-xl bg-[#FC4C02] hover:bg-[#E04300] text-white text-xs sm:text-sm font-bold transition-colors shadow-xs cursor-pointer disabled:opacity-60"
+                >
+                  <svg className="w-4 h-4 shrink-0 bg-white rounded-full p-0.5" viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      fill="#4285F4"
+                      d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24Z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14Z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
+                    />
+                  </svg>
+                  <span>
+                    {isSigningInGoogle ? 'Bezig met Google Pop-up...' : 'Inloggen met Google (Pop-up)'}
+                  </span>
+                </button>
+
+                {/* 2. Google Sign-In (Redirect — ideal for iPhone Safari & mobile browsers) */}
+                <button
+                  type="button"
+                  onClick={handleGoogleRedirect}
+                  disabled={isSigningInGoogle || isSigningInGoogleRedirect || isSigningInApple}
+                  data-testid="login-google-redirect-btn"
+                  className="w-full min-h-[44px] flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-900 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60"
+                >
+                  <Smartphone className="w-4 h-4 text-[#FC4C02] shrink-0" />
+                  <span>
+                    {isSigningInGoogleRedirect
+                      ? 'Doorsturen naar Google...'
+                      : 'Inloggen met Google via Redirect (iPhone Safari / Mobiel)'}
+                  </span>
+                </button>
+
+                {/* 3. Apple ID Sign-In (Pop-up + Redirect fallback) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={handleApplePopup}
+                    disabled={isSigningInGoogle || isSigningInGoogleRedirect || isSigningInApple}
+                    className="w-full min-h-[44px] flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60"
+                  >
+                    <svg className="w-4 h-4 fill-current shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
+                    </svg>
+                    <span>Apple ID (Pop-up)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleAppleRedirect}
+                    disabled={isSigningInGoogle || isSigningInGoogleRedirect || isSigningInApple}
+                    className="w-full min-h-[44px] flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60"
+                  >
+                    <span>Apple ID (Redirect)</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Error feedback + Firebase Authorized Domains helper */}
+              {authError && (
+                <div
+                  role="alert"
+                  className="p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-xs text-amber-950 space-y-2.5"
+                >
+                  <div className="flex items-start gap-2 font-bold text-amber-950">
+                    <AlertCircle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                    <span>{authError.title}</span>
+                  </div>
+                  <p className="text-amber-900 leading-relaxed">{authError.message}</p>
+
+                  {authError.code === 'popup-blocked' && (
+                    <button
+                      type="button"
+                      onClick={handleGoogleRedirect}
+                      className="w-full min-h-[40px] py-2 px-3 rounded-lg bg-[#FC4C02] text-white font-semibold hover:bg-[#E04300] transition-colors cursor-pointer"
+                    >
+                      Nu inloggen via Redirect (zonder pop-up) →
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Collapsible Admin Instructions for supermannen.netlify.app */}
+              <div className="border border-slate-200 rounded-xl bg-slate-50 p-3.5 space-y-2.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setShowAdminDomainGuide((prev) => !prev)}
+                  className="w-full flex items-center justify-between text-left font-bold text-slate-800 cursor-pointer"
+                >
+                  <span>Beheerder: Domein vrijgeven in Firebase (tegen unauthorized-domain)</span>
+                  <span className="text-[#FC4C02] ml-2">{showAdminDomainGuide ? 'Sluiten' : 'Stappenplan'}</span>
+                </button>
+
+                {showAdminDomainGuide && (
+                  <div className="pt-2 border-t border-slate-200 space-y-2.5 text-slate-700">
+                    <p className="leading-relaxed">
+                      Voeg eenmalig <strong>{netlifyDomain}</strong> (en eventueel dit preview-domein) toe in Firebase project{' '}
+                      <code className="font-mono bg-white px-1 py-0.5 rounded border border-slate-200">
+                        {firebaseConfig.projectId}
+                      </code>
+                      :
+                    </p>
+                    <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-700">
+                      <li>Open Firebase Console → <strong>Authentication</strong> → tabblad <strong>Settings</strong>.</li>
+                      <li>Klik in het linker submenu op <strong>Authorized domains</strong>.</li>
+                      <li>Klik op <strong>Add domain</strong> en plak exact onderstaand domein (zonder <code>https://</code> of slash):</li>
+                    </ol>
+
+                    {/* Copy supermannen.netlify.app */}
+                    <div className="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
+                      <code className="text-[11px] font-mono text-slate-900 truncate">{netlifyDomain}</code>
                       <button
                         type="button"
-                        onClick={() => handleCopyDomain(currentHostname)}
-                        className="inline-flex items-center gap-1 text-[#FC4C02] font-semibold shrink-0 cursor-pointer"
+                        onClick={() => handleCopyDomain(netlifyDomain)}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 text-[11px] font-semibold shrink-0 cursor-pointer"
                       >
-                        {copiedDomain === currentHostname ? (
+                        {copiedDomain === netlifyDomain ? (
                           <>
-                            <Check className="w-3 h-3" /> Gekopieerd
+                            <Check className="w-3 h-3 text-emerald-600" /> Gekopieerd
                           </>
                         ) : (
                           <>
@@ -336,88 +381,74 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onDirectLogin }) => {
                         )}
                       </button>
                     </div>
-                    <a
-                      href={firebaseAuthSettingsUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 font-semibold text-[#FC4C02] hover:underline"
-                    >
-                      Open Firebase Authorized Domains
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </div>
-                )}
 
-                {showAppleSetupGuide && (
-                  <div className="pl-6 space-y-1.5 text-[11px] text-slate-700 border-t border-amber-200/70 pt-2">
+                    {/* Copy current hostname if different */}
+                    {currentDomain !== netlifyDomain && (
+                      <div className="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
+                        <code className="text-[11px] font-mono text-slate-900 truncate">{currentDomain}</code>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyDomain(currentDomain)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 text-[11px] font-semibold shrink-0 cursor-pointer"
+                        >
+                          {copiedDomain === currentDomain ? (
+                            <>
+                              <Check className="w-3 h-3 text-emerald-600" /> Gekopieerd
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3" /> Kopieer huidig
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+
                     <a
-                      href={firebaseProvidersUrl}
+                      href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 font-semibold text-[#FC4C02] hover:underline"
+                      className="inline-flex items-center gap-1 font-bold text-[#FC4C02] hover:underline pt-0.5"
                     >
-                      Open Firebase Authentication Providers
-                      <ExternalLink className="w-3 h-3" />
+                      <span>Open Firebase Authorized Domains ({firebaseConfig.projectId})</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
                     </a>
                   </div>
                 )}
               </div>
-            )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              {/* Google Login Button */}
-              <button
-                type="button"
-                onClick={handleGoogleLogin}
-                disabled={isLoadingGoogle || isLoadingApple}
-                className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 font-semibold text-xs transition-colors cursor-pointer disabled:opacity-50"
-              >
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                  <path
-                    fill="#4285F4"
-                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96z"
-                  />
-                </svg>
-                <span>{isLoadingGoogle ? 'Bezig...' : 'Google Pop-up'}</span>
-              </button>
+              {/* Divider for Explicit Read-Only Guest Mode */}
+              <div className="relative flex items-center py-1">
+                <div className="flex-grow border-t border-slate-200" />
+                <span className="shrink-0 px-3 text-[11px] font-medium text-slate-400">
+                  Alleen meekijken zonder account?
+                </span>
+                <div className="flex-grow border-t border-slate-200" />
+              </div>
 
-              {/* Apple ID Login Button */}
-              <button
-                type="button"
-                onClick={handleAppleLogin}
-                disabled={isLoadingGoogle || isLoadingApple}
-                className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-[#0F172A] hover:bg-slate-800 text-white font-semibold text-xs transition-colors cursor-pointer disabled:opacity-50"
-              >
-                <svg
-                  className="w-4 h-4 shrink-0 fill-current"
-                  viewBox="0 0 24 24"
-                  aria-hidden="true"
+              {/* Explicit Read-Only Guest Button (Strictly No Write Permissions & No Impersonation) */}
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  onClick={onEnterGuestReadOnly}
+                  data-testid="enter-guest-readonly-btn"
+                  className="w-full min-h-[44px] flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-slate-300 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold transition-colors cursor-pointer"
                 >
-                  <path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
-                </svg>
-                <span>{isLoadingApple ? 'Bezig...' : 'Apple ID Pop-up'}</span>
-              </button>
+                  <Eye className="w-4 h-4 text-slate-600 shrink-0" />
+                  <span>Bekijk als Gast (Alleen-lezen — geen wijzigingsrechten)</span>
+                </button>
+                <p className="text-[11px] text-slate-500 text-center leading-normal">
+                  Als onbevestigde gast kun je de actuele groepslijst en kaart bekijken, maar geen huisjes, stemmen of deelnemers toevoegen of wijzigen.
+                </p>
+              </div>
             </div>
           </div>
         </div>
       </main>
 
-      {/* Bottom Footer */}
-      <footer className="relative z-10 max-w-6xl w-full mx-auto px-4 sm:px-8 py-5 text-xs text-slate-400 flex flex-col sm:flex-row items-center justify-between gap-2 border-t border-slate-800/80">
-        <span>Kopgroep ’27 — Racefiets Weekend Planner</span>
-        <span>Donderdag 27 mei t/m zondag 30 mei 2027</span>
+      {/* Footer */}
+      <footer className="border-t border-slate-800/80 py-3.5 px-4 sm:px-6 text-center text-xs text-slate-500">
+        Kopgroep ’27 — Racefiets Weekend Planner · Firebase Firestore ({firebaseConfig.firestoreDatabaseId})
       </footer>
     </div>
   );

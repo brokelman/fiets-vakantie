@@ -12,6 +12,13 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidTripId(tripId) {
+      return tripId is string &&
+        tripId.size() >= 14 &&
+        tripId.size() <= 19 &&
+        tripId.matches('^racefiets-2027(-test)?$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -51,7 +58,7 @@ service cloud.firestore {
         'routeUrl', 'notes', 'addedBy', 'voteScore', 'voteCount',
         'status', 'createdAt', 'updatedAt'
       ]) &&
-      data.tripId is string && data.tripId.size() == 14 && data.tripId.matches('^racefiets-2027$') &&
+      isValidTripId(data.tripId) &&
       data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
       data.title is string && data.title.size() >= 2 && data.title.size() <= 120 &&
       data.url is string && data.url.size() >= 8 && data.url.size() <= 500 && data.url.matches('^https?://.+') &&
@@ -117,7 +124,7 @@ service cloud.firestore {
       data.keys().hasOnly([
         'tripId', 'authorId', 'authorName', 'category', 'text', 'likesCount', 'status', 'createdAt', 'updatedAt'
       ]) &&
-      data.tripId is string && data.tripId.size() == 14 && data.tripId.matches('^racefiets-2027$') &&
+      isValidTripId(data.tripId) &&
       data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
       data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
       data.category is string && data.category.size() >= 5 && data.category.size() <= 10 &&
@@ -136,7 +143,7 @@ service cloud.firestore {
       data.keys().hasOnly([
         'tripId', 'ownerId', 'name', 'isDriver', 'carSeats', 'bikeSpots', 'notes', 'createdAt', 'updatedAt'
       ]) &&
-      data.tripId is string && data.tripId.size() == 14 && data.tripId.matches('^racefiets-2027$') &&
+      isValidTripId(data.tripId) &&
       data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
       data.name is string && data.name.size() >= 1 && data.name.size() <= 60 &&
       data.isDriver is bool &&
@@ -149,8 +156,8 @@ service cloud.firestore {
 
     // 4. Collection Rules: /houses/{houseId}
     match /houses/{houseId} {
-      allow get: if isVerifiedUser() && isValidId(houseId) && resource.data.tripId == 'racefiets-2027';
-      allow list: if isVerifiedUser() && resource.data.tripId == 'racefiets-2027';
+      allow get: if isValidId(houseId) && isValidTripId(resource.data.tripId);
+      allow list: if isValidTripId(resource.data.tripId);
 
       allow create: if isVerifiedUser() &&
         isValidId(houseId) &&
@@ -168,10 +175,9 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
-          // Action 1: Verified group member or owner edits house details while active
           (
             existing().status == 'active' &&
-            existing().tripId == 'racefiets-2027' &&
+            existing().ownerId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'title', 'url', 'photoUrl', 'locationName', 'lat', 'lng',
               'totalPrice', 'bedrooms', 'bathrooms', 'hasBbq',
@@ -179,7 +185,6 @@ service cloud.firestore {
               'notes', 'addedBy', 'status', 'updatedAt'
             ])
           ) ||
-          // Action 2: Group member updates vote aggregates atomically with their vote document
           (
             existing().status == 'active' &&
             incoming().diff(existing()).affectedKeys().hasOnly(['voteScore', 'voteCount', 'updatedAt']) &&
@@ -189,12 +194,12 @@ service cloud.firestore {
 
       allow delete: if isVerifiedUser() &&
         isValidId(houseId) &&
-        (existing().tripId == 'racefiets-2027' || existing().ownerId == request.auth.uid || isAdmin());
+        (existing().ownerId == request.auth.uid || isAdmin());
 
       // Subcollection: /houses/{houseId}/votes/{voteId}
       match /votes/{voteId} {
-        allow get: if isVerifiedUser() && isValidId(houseId) && isValidId(voteId) && resource.data.houseId == houseId;
-        allow list: if isVerifiedUser() && resource.data.houseId == houseId;
+        allow get: if isValidId(houseId) && isValidId(voteId) && resource.data.houseId == houseId;
+        allow list: if resource.data.houseId == houseId;
 
         allow create: if isVerifiedUser() &&
           isValidId(houseId) &&
@@ -202,7 +207,7 @@ service cloud.firestore {
           isValidHouseVote(incoming(), houseId, voteId) &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
-          getAfter(/databases/$(database)/documents/houses/$(houseId)).data.status == 'active';
+          get(/databases/$(database)/documents/houses/$(houseId)).data.status == 'active';
 
         allow update: if isVerifiedUser() &&
           isValidId(houseId) &&
@@ -224,8 +229,8 @@ service cloud.firestore {
 
       // Subcollection: /houses/{houseId}/comments/{commentId}
       match /comments/{commentId} {
-        allow get: if isVerifiedUser() && isValidId(houseId) && isValidId(commentId) && resource.data.houseId == houseId;
-        allow list: if isVerifiedUser() && resource.data.houseId == houseId;
+        allow get: if isValidId(houseId) && isValidId(commentId) && resource.data.houseId == houseId;
+        allow list: if resource.data.houseId == houseId;
 
         allow create: if isVerifiedUser() &&
           isValidId(houseId) &&
@@ -254,8 +259,8 @@ service cloud.firestore {
 
     // 5. Collection Rules: /ideas/{ideaId}
     match /ideas/{ideaId} {
-      allow get: if isVerifiedUser() && isValidId(ideaId) && resource.data.tripId == 'racefiets-2027';
-      allow list: if isVerifiedUser() && resource.data.tripId == 'racefiets-2027';
+      allow get: if isValidId(ideaId) && isValidTripId(resource.data.tripId);
+      allow list: if isValidTripId(resource.data.tripId);
 
       allow create: if isVerifiedUser() &&
         isValidId(ideaId) &&
@@ -273,13 +278,11 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
-          // Action 1: Author edits text, category, or resolves idea while open
           (
             existing().status == 'open' &&
             existing().authorId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly(['text', 'category', 'status', 'updatedAt'])
           ) ||
-          // Action 2: Group member increments likesCount by 1 while open
           (
             existing().status == 'open' &&
             incoming().diff(existing()).affectedKeys().hasOnly(['likesCount', 'updatedAt']) &&
@@ -289,13 +292,13 @@ service cloud.firestore {
 
       allow delete: if isVerifiedUser() &&
         isValidId(ideaId) &&
-        (existing().tripId == 'racefiets-2027' || existing().authorId == request.auth.uid || isAdmin());
+        (existing().authorId == request.auth.uid || isAdmin());
     }
 
     // 6. Collection Rules: /participants/{participantId}
     match /participants/{participantId} {
-      allow get: if isVerifiedUser() && isValidId(participantId) && resource.data.tripId == 'racefiets-2027';
-      allow list: if isVerifiedUser() && resource.data.tripId == 'racefiets-2027';
+      allow get: if isValidId(participantId) && isValidTripId(resource.data.tripId);
+      allow list: if isValidTripId(resource.data.tripId);
 
       allow create: if isVerifiedUser() &&
         isValidId(participantId) &&
@@ -313,7 +316,7 @@ service cloud.firestore {
         incoming().updatedAt == request.time && (
           isAdmin() ||
           (
-            existing().tripId == 'racefiets-2027' &&
+            existing().ownerId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'name', 'isDriver', 'carSeats', 'bikeSpots', 'notes', 'updatedAt'
             ])
@@ -322,7 +325,7 @@ service cloud.firestore {
 
       allow delete: if isVerifiedUser() &&
         isValidId(participantId) &&
-        (existing().tripId == 'racefiets-2027' || existing().ownerId == request.auth.uid || isAdmin());
+        (existing().ownerId == request.auth.uid || isAdmin());
     }
   }
 }
