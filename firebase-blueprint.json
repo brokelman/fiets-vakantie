@@ -8,9 +8,9 @@
         "tripId": {
           "type": "string",
           "description": "Vaste identifier van het groepsweekend.",
-          "pattern": "^racefiets-2027$",
+          "pattern": "^racefiets-2027(-test)?$",
           "minLength": 14,
-          "maxLength": 14
+          "maxLength": 19
         },
         "ownerId": {
           "type": "string",
@@ -30,13 +30,13 @@
           "description": "Externe link naar Airbnb, Booking, Belvilla of eigen website.",
           "pattern": "^https?://.+",
           "minLength": 8,
-          "maxLength": 500
+          "maxLength": 2000
         },
         "photoUrl": {
           "type": "string",
           "description": "Optionele directe URL naar een foto van het huisje.",
           "minLength": 0,
-          "maxLength": 500
+          "maxLength": 2000
         },
         "locationName": {
           "type": "string",
@@ -84,7 +84,7 @@
           "type": "string",
           "description": "Optionele link naar een Strava of Komoot route in de buurt.",
           "minLength": 0,
-          "maxLength": 500
+          "maxLength": 2000
         },
         "notes": {
           "type": "string",
@@ -252,9 +252,9 @@
         "tripId": {
           "type": "string",
           "description": "Vaste identifier van het groepsweekend.",
-          "pattern": "^racefiets-2027$",
+          "pattern": "^racefiets-2027(-test)?$",
           "minLength": 14,
-          "maxLength": 14
+          "maxLength": 19
         },
         "authorId": {
           "type": "string",
@@ -324,9 +324,9 @@
         "tripId": {
           "type": "string",
           "description": "Vaste identifier van het groepsweekend.",
-          "pattern": "^racefiets-2027$",
+          "pattern": "^racefiets-2027(-test)?$",
           "minLength": 14,
-          "maxLength": 14
+          "maxLength": 19
         },
         "ownerId": {
           "type": "string",

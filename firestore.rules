@@ -61,23 +61,23 @@ service cloud.firestore {
       isValidTripId(data.tripId) &&
       data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
       data.title is string && data.title.size() >= 2 && data.title.size() <= 120 &&
-      data.url is string && data.url.size() >= 8 && data.url.size() <= 500 && data.url.matches('^https?://.+') &&
-      data.photoUrl is string && data.photoUrl.size() <= 500 &&
+      data.url is string && data.url.size() >= 8 && data.url.size() <= 2000 && data.url.matches('^https?://.+') &&
+      data.photoUrl is string && data.photoUrl.size() <= 2000 &&
       data.locationName is string && data.locationName.size() >= 2 && data.locationName.size() <= 160 &&
       data.lat is number && data.lat >= -90 && data.lat <= 90 &&
       data.lng is number && data.lng >= -180 && data.lng <= 180 &&
       data.totalPrice is number && data.totalPrice > 0 && data.totalPrice <= 50000 &&
-      data.bedrooms is int && data.bedrooms >= 1 && data.bedrooms <= 50 &&
-      data.bathrooms is int && data.bathrooms >= 1 && data.bathrooms <= 50 &&
+      data.bedrooms is number && data.bedrooms >= 1 && data.bedrooms <= 50 &&
+      data.bathrooms is number && data.bathrooms >= 1 && data.bathrooms <= 50 &&
       data.hasBbq is bool &&
       data.hasFireplace is bool &&
       data.hasJacuzzi is bool &&
       data.hasSauna is bool &&
-      data.routeUrl is string && data.routeUrl.size() <= 500 &&
+      data.routeUrl is string && data.routeUrl.size() <= 2000 &&
       data.notes is string && data.notes.size() <= 1000 &&
       data.addedBy is string && data.addedBy.size() >= 1 && data.addedBy.size() <= 60 &&
-      data.voteScore is int && data.voteScore >= -1000 && data.voteScore <= 1000 &&
-      data.voteCount is int && data.voteCount >= 0 && data.voteCount <= 1000 &&
+      data.voteScore is number && data.voteScore >= -1000 && data.voteScore <= 1000 &&
+      data.voteCount is number && data.voteCount >= 0 && data.voteCount <= 1000 &&
       data.status is string && data.status.size() >= 6 && data.status.size() <= 8 && (data.status == 'active' || data.status == 'archived') &&
       data.createdAt is timestamp &&
       data.updatedAt is timestamp;
@@ -96,7 +96,7 @@ service cloud.firestore {
       data.userId == voteId &&
       data.userId == request.auth.uid &&
       data.voterName is string && data.voterName.size() >= 1 && data.voterName.size() <= 60 &&
-      data.value is int && data.value >= -1 && data.value <= 5 && data.value != 0 &&
+      data.value is number && data.value >= -1 && data.value <= 5 && data.value != 0 &&
       data.createdAt is timestamp &&
       data.updatedAt is timestamp;
     }
@@ -130,7 +130,7 @@ service cloud.firestore {
       data.category is string && data.category.size() >= 5 && data.category.size() <= 10 &&
       (data.category == 'regio' || data.category == 'route' || data.category == 'logistiek' || data.category == 'overig') &&
       data.text is string && data.text.size() >= 2 && data.text.size() <= 600 &&
-      data.likesCount is int && data.likesCount >= 0 && data.likesCount <= 1000 &&
+      data.likesCount is number && data.likesCount >= 0 && data.likesCount <= 1000 &&
       data.status is string && data.status.size() >= 4 && data.status.size() <= 8 && (data.status == 'open' || data.status == 'resolved') &&
       data.createdAt is timestamp &&
       data.updatedAt is timestamp;
@@ -147,15 +147,14 @@ service cloud.firestore {
       data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
       data.name is string && data.name.size() >= 1 && data.name.size() <= 60 &&
       data.isDriver is bool &&
-      data.carSeats is int && data.carSeats >= 0 && data.carSeats <= 15 &&
-      data.bikeSpots is int && data.bikeSpots >= 0 && data.bikeSpots <= 15 &&
+      data.carSeats is number && data.carSeats >= 0 && data.carSeats <= 15 &&
+      data.bikeSpots is number && data.bikeSpots >= 0 && data.bikeSpots <= 15 &&
       data.notes is string && data.notes.size() <= 300 &&
       data.createdAt is timestamp &&
       data.updatedAt is timestamp;
     }
 
     // 4. Collection Rules: /houses/{houseId}
-    // Read-only view allowed for explicit guest mode scoped to valid tripId; ALL mutations strictly require isVerifiedUser()
     match /houses/{houseId} {
       allow get: if isValidId(houseId) && isValidTripId(resource.data.tripId);
       allow list: if isValidTripId(resource.data.tripId);
@@ -200,6 +199,7 @@ service cloud.firestore {
         (existing().ownerId == request.auth.uid || isAdmin());
 
       // Subcollection: /houses/{houseId}/votes/{voteId}
+      // Uses getAfter() on /houses/$(houseId) so atomic writeBatch creation of a house + initial creator vote succeeds!
       match /votes/{voteId} {
         allow get: if isValidId(houseId) && isValidId(voteId) && resource.data.houseId == houseId;
         allow list: if resource.data.houseId == houseId;
@@ -210,7 +210,7 @@ service cloud.firestore {
           isValidHouseVote(incoming(), houseId, voteId) &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
-          get(/databases/$(database)/documents/houses/$(houseId)).data.status == 'active';
+          getAfter(/databases/$(database)/documents/houses/$(houseId)).data.status == 'active';
 
         allow update: if isVerifiedUser() &&
           isValidId(houseId) &&
@@ -222,7 +222,7 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
           incoming().diff(existing()).affectedKeys().hasOnly(['value', 'voterName', 'updatedAt']) &&
-          get(/databases/$(database)/documents/houses/$(houseId)).data.status == 'active';
+          getAfter(/databases/$(database)/documents/houses/$(houseId)).data.status == 'active';
 
         allow delete: if isVerifiedUser() &&
           isValidId(houseId) &&
@@ -240,7 +240,7 @@ service cloud.firestore {
           isValidId(commentId) &&
           isValidHouseComment(incoming(), houseId) &&
           incoming().createdAt == request.time &&
-          get(/databases/$(database)/documents/houses/$(houseId)).data.status == 'active';
+          getAfter(/databases/$(database)/documents/houses/$(houseId)).data.status == 'active';
 
         allow update: if isVerifiedUser() &&
           isValidId(houseId) &&
@@ -251,7 +251,7 @@ service cloud.firestore {
           incoming().houseId == existing().houseId &&
           incoming().createdAt == existing().createdAt &&
           incoming().diff(existing()).affectedKeys().hasOnly(['text']) &&
-          get(/databases/$(database)/documents/houses/$(houseId)).data.status == 'active';
+          getAfter(/databases/$(database)/documents/houses/$(houseId)).data.status == 'active';
 
         allow delete: if isVerifiedUser() &&
           isValidId(houseId) &&
