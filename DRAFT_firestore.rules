@@ -202,7 +202,7 @@ service cloud.firestore {
           isValidHouseVote(incoming(), houseId, voteId) &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
-          get(/databases/$(database)/documents/houses/$(houseId)).data.status == 'active';
+          getAfter(/databases/$(database)/documents/houses/$(houseId)).data.status == 'active';
 
         allow update: if isVerifiedUser() &&
           isValidId(houseId) &&
