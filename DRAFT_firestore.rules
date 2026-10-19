@@ -32,14 +32,18 @@ service cloud.firestore {
     }
 
     function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
+      return isSignedIn() && (
+        request.auth.token.email_verified == true ||
+        request.auth.token.firebase.sign_in_provider == 'password'
+      );
     }
 
     function isAdmin() {
-      return isVerifiedUser() && (
-        request.auth.token.email == 'brokelman@gmail.com' ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
+      return isSignedIn() &&
+        request.auth.token.email_verified == true && (
+          request.auth.token.email == 'brokelman@gmail.com' ||
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        );
     }
 
     // 3. Entity Validation Blueprints
@@ -280,11 +284,13 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
+          // Action 1: Verified author edits text, category, or status while open
           (
             existing().status == 'open' &&
             existing().authorId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly(['text', 'category', 'status', 'updatedAt'])
           ) ||
+          // Action 2: Verified group member increments likesCount by 1 while open
           (
             existing().status == 'open' &&
             incoming().diff(existing()).affectedKeys().hasOnly(['likesCount', 'updatedAt']) &&

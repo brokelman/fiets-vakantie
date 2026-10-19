@@ -236,10 +236,17 @@ function MainApplication() {
     return () => unsub();
   }, []);
 
-  // Verified user check: ONLY confirmed Firebase Auth users with verified email can mutate shared group data!
-  const isVerifiedMember = Boolean(currentUser && currentUser.emailVerified);
+  // Authenticated member check: confirmed Firebase Auth users via Google or Email/Password can mutate shared group data
+  const isVerifiedMember = Boolean(
+    currentUser &&
+      !currentUser.isAnonymous &&
+      (currentUser.emailVerified ||
+        currentUser.providerData.some((p) => p.providerId === 'password'))
+  );
   const isAdminUser = Boolean(
-    isVerifiedMember && currentUser?.email?.toLowerCase() === 'brokelman@gmail.com'
+    currentUser &&
+      currentUser.emailVerified &&
+      currentUser.email?.toLowerCase() === 'brokelman@gmail.com'
   );
   const canViewApp = Boolean(currentUser || isGuestReadOnly);
 
@@ -594,7 +601,7 @@ function MainApplication() {
 
   const requireVerifiedLogin = (actionLabel: string): boolean => {
     if (!isVerifiedMember || !currentUser) {
-      showToast(`Log eerst in met je geverifieerde Google- of Apple-account om ${actionLabel}.`);
+      showToast(`Log eerst in met je Google-account of e-mailadres om ${actionLabel}.`);
       return false;
     }
     return true;
@@ -1085,12 +1092,19 @@ function MainApplication() {
     );
   }
 
-  // 2. Login Gate (Verified Google/Apple Auth OR Explicitly Labeled Read-Only Guest Mode)
+  // 2. Login Gate (Google or Email/Password Auth)
   if (!canViewApp) {
     return (
       <LoginPage
         onEnterGuestReadOnly={handleEnterGuestReadOnly}
         isTestEnvironment={isTestEnvironment}
+        onUserDisplayNameChosen={(chosenName) => {
+          const clean = chosenName.trim().slice(0, VALIDATION_CONSTRAINTS.NAME_MAX);
+          if (clean) {
+            setFriendName(clean);
+            localStorage.setItem(STORAGE_KEY_USERNAME, clean);
+          }
+        }}
       />
     );
   }
@@ -1225,7 +1239,7 @@ function MainApplication() {
               onClick={handleLogoutOrExitGuest}
               className="px-3 py-1.5 rounded-lg bg-[#FC4C02] hover:bg-[#E04300] text-white font-semibold whitespace-nowrap shrink-0 cursor-pointer"
             >
-              Inloggen met Google / Apple →
+              Inloggen met Google / E-mail →
             </button>
           </div>
         </div>

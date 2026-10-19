@@ -32,14 +32,18 @@ service cloud.firestore {
     }
 
     function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
+      return isSignedIn() && (
+        request.auth.token.email_verified == true ||
+        request.auth.token.firebase.sign_in_provider == 'password'
+      );
     }
 
     function isAdmin() {
-      return isVerifiedUser() && (
-        request.auth.token.email == 'brokelman@gmail.com' ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
+      return isSignedIn() &&
+        request.auth.token.email_verified == true && (
+          request.auth.token.email == 'brokelman@gmail.com' ||
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        );
     }
 
     // 3. Entity Validation Blueprints
@@ -199,7 +203,6 @@ service cloud.firestore {
         (existing().ownerId == request.auth.uid || isAdmin());
 
       // Subcollection: /houses/{houseId}/votes/{voteId}
-      // Uses getAfter() on /houses/$(houseId) so atomic writeBatch creation of a house + initial creator vote succeeds!
       match /votes/{voteId} {
         allow get: if isValidId(houseId) && isValidId(voteId) && resource.data.houseId == houseId;
         allow list: if resource.data.houseId == houseId;

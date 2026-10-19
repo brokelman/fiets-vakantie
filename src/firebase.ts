@@ -1,12 +1,15 @@
 import { initializeApp } from 'firebase/app';
 import {
+  createUserWithEmailAndPassword,
   getAuth,
   getRedirectResult,
   GoogleAuthProvider,
-  OAuthProvider,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signInWithRedirect,
   signOut,
+  updateProfile,
   UserCredential,
 } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
@@ -20,10 +23,6 @@ export const auth = getAuth(app);
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
-
-export const appleProvider = new OAuthProvider('apple.com');
-appleProvider.addScope('email');
-appleProvider.addScope('name');
 
 const REDIRECT_PENDING_KEY = 'kopgroep27_oauth_redirect_pending';
 
@@ -104,19 +103,6 @@ export async function signInWithGoogleRedirect(): Promise<void> {
   return signInWithRedirect(auth, googleProvider);
 }
 
-export async function signInWithApplePopup(): Promise<UserCredential> {
-  return signInWithPopup(auth, appleProvider);
-}
-
-export async function signInWithAppleRedirect(): Promise<void> {
-  try {
-    sessionStorage.setItem(REDIRECT_PENDING_KEY, 'Apple');
-  } catch {
-    // Ignore storage errors
-  }
-  return signInWithRedirect(auth, appleProvider);
-}
-
 /**
  * Unified Google Sign-In: tries pop-up first and automatically falls back to redirect if pop-up is blocked.
  */
@@ -134,19 +120,36 @@ export async function signInWithGoogle(): Promise<UserCredential | null> {
 }
 
 /**
- * Unified Apple Sign-In: tries pop-up first and automatically falls back to redirect if pop-up is blocked.
+ * Sign in with existing Email & Password account.
  */
-export async function signInWithApple(): Promise<UserCredential | null> {
-  try {
-    return await signInWithPopup(auth, appleProvider);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('auth/popup-blocked')) {
-      await signInWithAppleRedirect();
-      return null;
-    }
-    throw err;
+export async function signInWithEmail(
+  email: string,
+  password: string
+): Promise<UserCredential> {
+  return signInWithEmailAndPassword(auth, email.trim(), password);
+}
+
+/**
+ * Register a new Email & Password account and optionally set the user's displayName.
+ */
+export async function registerWithEmail(
+  email: string,
+  password: string,
+  displayName?: string
+): Promise<UserCredential> {
+  const credential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+  const cleanName = displayName?.trim().slice(0, 60);
+  if (cleanName) {
+    await updateProfile(credential.user, { displayName: cleanName });
   }
+  return credential;
+}
+
+/**
+ * Send password reset email via Firebase Auth.
+ */
+export async function resetPasswordForEmail(email: string): Promise<void> {
+  return sendPasswordResetEmail(auth, email.trim());
 }
 
 /**
@@ -155,12 +158,12 @@ export async function signInWithApple(): Promise<UserCredential | null> {
  */
 export async function checkAuthRedirectResult(): Promise<{
   credential: UserCredential | null;
-  providerLabel: 'Google' | 'Apple';
+  providerLabel: 'Google' | 'E-mail';
 }> {
-  let pendingProvider: 'Google' | 'Apple' | null = null;
+  let pendingProvider: 'Google' | null = null;
   try {
     const raw = sessionStorage.getItem(REDIRECT_PENDING_KEY);
-    if (raw === 'Google' || raw === 'Apple') {
+    if (raw === 'Google') {
       pendingProvider = raw;
     }
     sessionStorage.removeItem(REDIRECT_PENDING_KEY);
@@ -186,6 +189,11 @@ export interface ClassifiedAuthError {
     | 'popup-closed'
     | 'popup-blocked'
     | 'operation-not-allowed'
+    | 'invalid-credentials'
+    | 'email-already-in-use'
+    | 'weak-password'
+    | 'invalid-email'
+    | 'too-many-requests'
     | 'network-error'
     | 'unknown';
   title: string;
@@ -193,7 +201,10 @@ export interface ClassifiedAuthError {
   rawMessage: string;
 }
 
-export function classifyAuthError(err: unknown, providerLabel: 'Google' | 'Apple'): ClassifiedAuthError {
+export function classifyAuthError(
+  err: unknown,
+  providerLabel: 'Google' | 'E-mail' | 'Apple' = 'Google'
+): ClassifiedAuthError {
   const rawMessage = err instanceof Error ? err.message : String(err);
 
   if (rawMessage.includes('auth/unauthorized-domain')) {
@@ -227,11 +238,62 @@ export function classifyAuthError(err: unknown, providerLabel: 'Google' | 'Apple
     };
   }
 
+  if (
+    rawMessage.includes('auth/invalid-credential') ||
+    rawMessage.includes('auth/wrong-password') ||
+    rawMessage.includes('auth/user-not-found')
+  ) {
+    return {
+      code: 'invalid-credentials',
+      title: 'Onjuist e-mailadres of wachtwoord',
+      message:
+        'Controleer je e-mailadres en wachtwoord. Heb je nog geen account? Kies hierboven eerst voor "Account aanmaken".',
+      rawMessage,
+    };
+  }
+
+  if (rawMessage.includes('auth/email-already-in-use')) {
+    return {
+      code: 'email-already-in-use',
+      title: 'Dit e-mailadres heeft al een account',
+      message:
+        'Er bestaat al een account met dit e-mailadres. Schakel hierboven naar "Inloggen" of klik op "Wachtwoord vergeten?".',
+      rawMessage,
+    };
+  }
+
+  if (rawMessage.includes('auth/weak-password')) {
+    return {
+      code: 'weak-password',
+      title: 'Wachtwoord is te kort',
+      message: 'Kies een wachtwoord van minimaal 6 tekens.',
+      rawMessage,
+    };
+  }
+
+  if (rawMessage.includes('auth/invalid-email')) {
+    return {
+      code: 'invalid-email',
+      title: 'Ongeldig e-mailadres',
+      message: 'Controleer of je een geldig e-mailadres hebt ingevuld (bijv. naam@voorbeeld.nl).',
+      rawMessage,
+    };
+  }
+
+  if (rawMessage.includes('auth/too-many-requests')) {
+    return {
+      code: 'too-many-requests',
+      title: 'Te veel pogingen achter elkaar',
+      message: 'Wacht een paar minuten of stel je wachtwoord opnieuw in via "Wachtwoord vergeten?".',
+      rawMessage,
+    };
+  }
+
   if (rawMessage.includes('auth/operation-not-allowed')) {
     return {
       code: 'operation-not-allowed',
-      title: `${providerLabel} Sign-In is nog niet geactiveerd in Firebase`,
-      message: `Schakel ${providerLabel} in via Firebase Console → Authentication → Sign-in method (project: ${firebaseConfig.projectId}).`,
+      title: 'E-mail & Wachtwoord is nog niet ingeschakeld in Firebase',
+      message: `Zet "Email/Password" eenmalig aan via Firebase Console → Authentication → Sign-in method (project: ${firebaseConfig.projectId}).`,
       rawMessage,
     };
   }
