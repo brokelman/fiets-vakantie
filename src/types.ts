@@ -74,3 +74,4 @@ export interface ParticipantRecord {
 
 export type SortOption = 'populariteit' | 'prijs_oplopend' | 'slaapkamers';
 export type FacilityFilter = 'alle' | 'bbq' | 'openhaard' | 'jacuzzi' | 'sauna';
+export type VoteFilter = 'alle' | 'nog_niet_beoordeeld' | 'wel_beoordeeld';

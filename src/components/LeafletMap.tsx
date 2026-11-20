@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import L from 'leaflet';
 import { HouseRecord } from '../types';
+import { getHouseRatingSummary } from '../utils/validation';
 import { Compass, Crosshair } from 'lucide-react';
 
 interface LeafletMapProps {
@@ -188,6 +189,7 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
       if (house.hasJacuzzi) extrasList.push('Jacuzzi');
       if (house.hasSauna) extrasList.push('Sauna');
       const extrasText = extrasList.length > 0 ? extrasList.join(' · ') : 'Geen extra’s opgegeven';
+      const ratingSummary = getHouseRatingSummary(house);
 
       const popupContent = document.createElement('div');
       popupContent.className = 'p-4 bg-white text-slate-900';
@@ -209,7 +211,7 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
         </div>
         <div class="flex items-center justify-between text-xs text-slate-600 mb-2">
           <span>${house.bedrooms} slaapkamers · ${house.bathrooms} badkamers</span>
-          <span class="font-mono-num font-semibold text-slate-900">${house.voteScore} pt</span>
+          <span class="font-mono-num font-semibold text-slate-900">${ratingSummary.compactLabel}</span>
         </div>
         <div class="text-[11px] text-slate-500 mb-3">
           Extra’s: ${extrasText}

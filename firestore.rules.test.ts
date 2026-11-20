@@ -14,6 +14,7 @@ import {
 } from 'firebase/firestore';
 import {
   extractCustomLocalHousesToMigrate,
+  getHouseRatingSummary,
   normalizeStoredBikeSpots,
   normalizeStoredCarSeats,
   parseBikeSpotsInput,
@@ -120,7 +121,15 @@ async function runAcceptanceTests() {
   assert.equal(resolveTripId(''), 'racefiets-2027');
   assert.equal(resolveTripId('?env=test'), 'racefiets-2027-test');
   assert.equal(resolveTripId('', true), 'racefiets-2027-test');
-  console.log('✓ Migratie-filter (geen terugkerende voorbeeldhuisjes) en testomgeving-isolatie GESLAAGD.');
+
+  // Average rating per person test (e.g., 26 points across 8 votes -> 3.3 sterren (8 stemmen))
+  const ratingRes = getHouseRatingSummary({
+    voteScore: 26,
+    voteCount: 8,
+    votes: [],
+  });
+  assert.equal(ratingRes.formattedLabel, 'Gemiddelde: 3.3 sterren (8 stemmen)');
+  console.log('✓ Migratie-filter, gemiddelde waardering per persoon en testomgeving-isolatie GESLAAGD.');
 
   console.log('\n=== 3. AUTHENTICATIE FOUTCLASSIFICATIE TESTS ===');
   const unauthErr = classifyAuthError(new Error('Firebase: Error (auth/unauthorized-domain).'), 'Google');

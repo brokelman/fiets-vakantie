@@ -10,7 +10,52 @@ export interface ParsedNumericField {
   error?: string;
 }
 
+export interface HouseRatingSummary {
+  average: number;
+  count: number;
+  formattedAverage: string;
+  formattedLabel: string;
+  compactLabel: string;
+}
+
 export const DEMO_HOUSE_IDS = new Set(INITIAL_HOUSES.map((h) => h.id));
+
+/**
+ * Computes average rating per person for a house instead of summing total points.
+ * E.g. "Gemiddelde: 3.2 sterren (8 stemmen)" instead of "Score: 25 pt (8 stemmen)".
+ */
+export function getHouseRatingSummary(
+  house: Pick<HouseRecord, 'voteScore' | 'voteCount' | 'votes'>
+): HouseRatingSummary {
+  const votesList = house.votes && house.votes.length > 0 ? house.votes : null;
+  const count = votesList ? votesList.length : Math.max(0, Number(house.voteCount) || 0);
+
+  if (count === 0) {
+    return {
+      average: 0,
+      count: 0,
+      formattedAverage: '–',
+      formattedLabel: 'Gemiddelde: nog geen stemmen',
+      compactLabel: '0 stemmen',
+    };
+  }
+
+  const totalScore = votesList
+    ? votesList.reduce((sum, v) => sum + (Number(v.value) || 0), 0)
+    : Number(house.voteScore) || 0;
+
+  const average = totalScore / count;
+  const formattedAverage = average.toFixed(1);
+  const stemWord = count === 1 ? 'stem' : 'stemmen';
+
+  return {
+    average,
+    count,
+    formattedAverage,
+    formattedLabel: `Gemiddelde: ${formattedAverage} sterren (${count} ${stemWord})`,
+    compactLabel: `${formattedAverage} ★ (${count} ${stemWord})`,
+  };
+}
 
 /**
  * Resolves the active tripId ('racefiets-2027' for production, 'racefiets-2027-test' for isolated test environment).

@@ -324,7 +324,6 @@ service cloud.firestore {
         incoming().updatedAt == request.time && (
           isAdmin() ||
           (
-            existing().ownerId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'name', 'isDriver', 'carSeats', 'bikeSpots', 'notes', 'updatedAt'
             ])

@@ -73,6 +73,7 @@ import {
   HouseVoteRecord,
   ParticipantRecord,
   SortOption,
+  VoteFilter,
 } from './types';
 import { INITIAL_HOUSES } from './data/initialData';
 import { HouseIllustration } from './components/HouseIllustration';
@@ -82,6 +83,7 @@ import { LoginPage } from './components/LoginPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import {
   extractCustomLocalHousesToMigrate,
+  getHouseRatingSummary,
   normalizeStoredBikeSpots,
   normalizeStoredCarSeats,
   parseBikeSpotsInput,
@@ -167,13 +169,16 @@ function MainApplication() {
   const [listDisplayMode, setListDisplayMode] = useState<'kaarten' | 'tabel'>('kaarten');
   const [mobilePane, setMobilePane] = useState<'lijst' | 'kaart' | 'beide'>('lijst');
   const [selectedHouseId, setSelectedHouseId] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<SortOption>('populariteit');
+  // Default sort is 'prijs_oplopend' so the list order never jumps around while voting and gives price context
+  const [sortBy, setSortBy] = useState<SortOption>('prijs_oplopend');
   const [facilityFilter, setFacilityFilter] = useState<FacilityFilter>('alle');
+  const [voteFilter, setVoteFilter] = useState<VoteFilter>('alle');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({});
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
 
   // Participant form state — string inputs so '0', '', negative, and invalid inputs are accurately distinguished!
+  const [editingParticipantId, setEditingParticipantId] = useState<string | null>(null);
   const [participantName, setParticipantName] = useState('');
   const [participantIsDriver, setParticipantIsDriver] = useState(true);
   const [participantCarSeatsInput, setParticipantCarSeatsInput] = useState<string>('3');
@@ -554,14 +559,24 @@ function MainApplication() {
     }
   };
 
-  // Determine the single Group Favorite house (highest voteScore > 0)
+  // Count how many houses the current user has not yet rated
+  const unratedHousesCount = useMemo(() => {
+    if (!currentUser) return activeHouses.length;
+    return activeHouses.filter((h) => !(h.votes || []).some((v) => v.userId === currentUser.uid)).length;
+  }, [activeHouses, currentUser]);
+
+  // Determine the single Group Favorite house (highest average rating > 0, tie-breaker: more votes, then lower price)
   const favoriteHouseId = useMemo(() => {
     if (activeHouses.length === 0) return null;
     const sorted = [...activeHouses].sort((a, b) => {
-      if (b.voteScore !== a.voteScore) return b.voteScore - a.voteScore;
+      const rA = getHouseRatingSummary(a);
+      const rB = getHouseRatingSummary(b);
+      if (rB.average !== rA.average) return rB.average - rA.average;
+      if (rB.count !== rA.count) return rB.count - rA.count;
       return a.totalPrice - b.totalPrice;
     });
-    return sorted[0].voteScore > 0 ? sorted[0].id : null;
+    const topRating = getHouseRatingSummary(sorted[0]);
+    return topRating.count > 0 && topRating.average > 0 ? sorted[0].id : null;
   }, [activeHouses]);
 
   // Filtered and sorted houses
@@ -572,6 +587,11 @@ function MainApplication() {
         if (facilityFilter === 'openhaard' && !h.hasFireplace) return false;
         if (facilityFilter === 'jacuzzi' && !h.hasJacuzzi) return false;
         if (facilityFilter === 'sauna' && !h.hasSauna) return false;
+        if (voteFilter !== 'alle' && currentUser) {
+          const hasVoted = (h.votes || []).some((v) => v.userId === currentUser.uid);
+          if (voteFilter === 'nog_niet_beoordeeld' && hasVoted) return false;
+          if (voteFilter === 'wel_beoordeeld' && !hasVoted) return false;
+        }
         if (searchQuery.trim()) {
           const q = searchQuery.toLowerCase();
           const match =
@@ -585,7 +605,10 @@ function MainApplication() {
       })
       .sort((a, b) => {
         if (sortBy === 'populariteit') {
-          if (b.voteScore !== a.voteScore) return b.voteScore - a.voteScore;
+          const rA = getHouseRatingSummary(a);
+          const rB = getHouseRatingSummary(b);
+          if (rB.average !== rA.average) return rB.average - rA.average;
+          if (rB.count !== rA.count) return rB.count - rA.count;
           return a.totalPrice - b.totalPrice;
         }
         if (sortBy === 'prijs_oplopend') {
@@ -597,7 +620,7 @@ function MainApplication() {
         }
         return 0;
       });
-  }, [activeHouses, facilityFilter, searchQuery, sortBy]);
+  }, [activeHouses, facilityFilter, voteFilter, currentUser, searchQuery, sortBy]);
 
   const requireVerifiedLogin = (actionLabel: string): boolean => {
     if (!isVerifiedMember || !currentUser) {
@@ -875,12 +898,33 @@ function MainApplication() {
     setIsAddModalOpen(true);
   };
 
-  // PARTICIPANTS & CARPOOL MANAGEMENT — Strictly preserves 0 bikes!
+  // PARTICIPANTS & CARPOOL MANAGEMENT — Supports adding AND editing all variables (name, isDriver, carSeats, bikeSpots, notes)
+  const handleStartEditParticipant = (p: ParticipantRecord) => {
+    if (!requireVerifiedLogin('vervoersgegevens te wijzigen')) return;
+    setEditingParticipantId(p.id);
+    setParticipantName(p.name);
+    setParticipantIsDriver(p.isDriver);
+    setParticipantCarSeatsInput(p.isDriver ? String(p.carSeats) : '3');
+    setParticipantBikeSpotsInput(p.isDriver ? String(p.bikeSpots) : '0');
+    setParticipantNotes(p.notes || '');
+    setParticipantFormError(null);
+  };
+
+  const handleCancelEditParticipant = () => {
+    setEditingParticipantId(null);
+    setParticipantName('');
+    setParticipantIsDriver(true);
+    setParticipantCarSeatsInput('3');
+    setParticipantBikeSpotsInput('0');
+    setParticipantNotes('');
+    setParticipantFormError(null);
+  };
+
   const handleAddParticipant = async (e: React.FormEvent) => {
     e.preventDefault();
     setParticipantFormError(null);
 
-    if (!requireVerifiedLogin('je aan te melden op de deelnemerslijst')) return;
+    if (!requireVerifiedLogin('vervoersgegevens op te slaan')) return;
     if (!currentUser) return;
 
     const cleanName = participantName.trim().slice(0, VALIDATION_CONSTRAINTS.NAME_MAX);
@@ -908,8 +952,33 @@ function MainApplication() {
       bikes = parsedBikes.value;
     }
 
-    const pId = sanitizeId(`deelnemer-${Date.now()}`);
     const cleanNotes = participantNotes.trim().slice(0, 300);
+
+    // If editing an existing participant entry, update all variables in Firestore
+    if (editingParticipantId) {
+      try {
+        await updateDoc(doc(db, 'participants', editingParticipantId), {
+          name: cleanName,
+          isDriver: participantIsDriver,
+          carSeats: seats,
+          bikeSpots: bikes,
+          notes: cleanNotes,
+          updatedAt: serverTimestamp(),
+        });
+
+        handleCancelEditParticipant();
+        showToast(
+          participantIsDriver
+            ? `Gegevens van ${cleanName} bijgewerkt: chauffeur (${seats} pers., ${bikes} fietsen)!`
+            : `Gegevens van ${cleanName} bijgewerkt: meerijder!`
+        );
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `participants/${editingParticipantId}`);
+      }
+      return;
+    }
+
+    const pId = sanitizeId(`deelnemer-${Date.now()}`);
 
     try {
       await setDoc(doc(db, 'participants', pId), {
@@ -939,14 +1008,14 @@ function MainApplication() {
 
   const handleUpdateParticipant = async (
     participant: ParticipantRecord,
-    updates: Partial<Pick<ParticipantRecord, 'isDriver' | 'carSeats' | 'bikeSpots' | 'notes'>>
+    updates: Partial<Pick<ParticipantRecord, 'name' | 'isDriver' | 'carSeats' | 'bikeSpots' | 'notes'>>
   ) => {
     if (!requireVerifiedLogin('deelnemergegevens aan te passen')) return;
-    if (!canModifyRecord(participant.ownerId)) {
-      showToast('Je kunt alleen je eigen deelnemer-inschrijving wijzigen.');
-      return;
-    }
 
+    const nextName =
+      updates.name !== undefined
+        ? updates.name.trim().slice(0, VALIDATION_CONSTRAINTS.NAME_MAX) || participant.name
+        : participant.name;
     const nextDriver = updates.isDriver !== undefined ? updates.isDriver : participant.isDriver;
     const nextSeats = nextDriver
       ? updates.carSeats !== undefined
@@ -963,6 +1032,7 @@ function MainApplication() {
 
     try {
       await updateDoc(doc(db, 'participants', participant.id), {
+        name: nextName,
         isDriver: nextDriver,
         carSeats: nextSeats,
         bikeSpots: nextBikes,
@@ -977,8 +1047,12 @@ function MainApplication() {
   const handleDeleteParticipant = async (participant: ParticipantRecord) => {
     if (!requireVerifiedLogin('een deelnemer te verwijderen')) return;
     if (!canModifyRecord(participant.ownerId)) {
-      showToast('Je kunt alleen je eigen deelnemer-inschrijving verwijderen.');
+      showToast('Alleen degene die deze deelnemer heeft aangemaakt (of de beheerder) kan de regel verwijderen.');
       return;
+    }
+
+    if (editingParticipantId === participant.id) {
+      handleCancelEditParticipant();
     }
 
     try {
@@ -1603,76 +1677,123 @@ function MainApplication() {
               </div>
 
               {/* Filter & Sort Controls Bar */}
-              <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                {/* Extra's filter segmented buttons */}
-                <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto max-w-full">
-                  {(
-                    [
-                      { id: 'alle', label: 'Alle huisjes' },
-                      { id: 'bbq', label: 'BBQ plaats' },
-                      { id: 'openhaard', label: 'Open haard' },
-                      { id: 'jacuzzi', label: 'Jacuzzi' },
-                      { id: 'sauna', label: 'Sauna' },
-                    ] as { id: FacilityFilter; label: string }[]
-                  ).map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setFacilityFilter(tab.id)}
-                      className={`min-h-[34px] px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                        facilityFilter === tab.id
-                          ? 'bg-white text-slate-900 shadow-xs font-semibold'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
+              <div className="pt-3 border-t border-slate-100 space-y-2.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  {/* Extra's filter segmented buttons */}
+                  <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto max-w-full">
+                    {(
+                      [
+                        { id: 'alle', label: 'Alle huisjes' },
+                        { id: 'bbq', label: 'BBQ plaats' },
+                        { id: 'openhaard', label: 'Open haard' },
+                        { id: 'jacuzzi', label: 'Jacuzzi' },
+                        { id: 'sauna', label: 'Sauna' },
+                      ] as { id: FacilityFilter; label: string }[]
+                    ).map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setFacilityFilter(tab.id)}
+                        className={`min-h-[34px] px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          facilityFilter === tab.id
+                            ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
 
-                {/* Sort & Display Mode selector */}
-                <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  <select
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value as SortOption)}
-                    aria-label="Sorteer vakantiehuizen"
-                    className="min-h-[36px] px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-800 focus:border-[#FC4C02] focus:outline-hidden cursor-pointer"
-                  >
-                    <option value="populariteit">Populariteit (meeste stemmen)</option>
-                    <option value="prijs_oplopend">Prijs (laag naar hoog)</option>
-                    <option value="slaapkamers">Meeste slaapkamers</option>
-                  </select>
+                  {/* Sort & Display Mode selector */}
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <select
+                      value={sortBy}
+                      onChange={(e) => setSortBy(e.target.value as SortOption)}
+                      aria-label="Sorteer vakantiehuizen"
+                      className="min-h-[36px] px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-800 focus:border-[#FC4C02] focus:outline-hidden cursor-pointer"
+                    >
+                      <option value="prijs_oplopend">Prijs (laag naar hoog — vaste volgorde)</option>
+                      <option value="populariteit">Hoogste gemiddelde (sterren)</option>
+                      <option value="slaapkamers">Meeste slaapkamers</option>
+                    </select>
 
-                  {/* Switch between Cards and Compact List Table */}
-                  <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                    <button
-                      type="button"
-                      onClick={() => setListDisplayMode('kaarten')}
-                      title="Kaartweergave met foto's"
-                      className={`min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                        listDisplayMode === 'kaarten'
-                          ? 'bg-white text-slate-900 shadow-xs font-semibold'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      <LayoutGrid className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Kaarten</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setListDisplayMode('tabel')}
-                      title="Compacte beheerlijst"
-                      className={`min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
-                        listDisplayMode === 'tabel'
-                          ? 'bg-white text-slate-900 shadow-xs font-semibold'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      <List className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Compacte lijst</span>
-                    </button>
+                    {/* Switch between Cards and Compact List Table */}
+                    <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+                      <button
+                        type="button"
+                        onClick={() => setListDisplayMode('kaarten')}
+                        title="Kaartweergave met foto's"
+                        className={`min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                          listDisplayMode === 'kaarten'
+                            ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        <LayoutGrid className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Kaarten</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setListDisplayMode('tabel')}
+                        title="Compacte beheerlijst"
+                        className={`min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer ${
+                          listDisplayMode === 'tabel'
+                            ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        <List className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Compacte lijst</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
+
+                {/* Personal Assessment Filter: Huisjes die ik nog niet beoordeeld heb */}
+                {currentUser && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                    <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                      Mijn beoordelingen:
+                    </span>
+                    <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg overflow-x-auto max-w-full">
+                      <button
+                        type="button"
+                        onClick={() => setVoteFilter('alle')}
+                        className={`min-h-[32px] px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          voteFilter === 'alle'
+                            ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        Alle ({activeHouses.length})
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="filter-unrated-btn"
+                        onClick={() => setVoteFilter('nog_niet_beoordeeld')}
+                        className={`min-h-[32px] px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          voteFilter === 'nog_niet_beoordeeld'
+                            ? 'bg-[#FC4C02] text-white shadow-xs font-semibold'
+                            : 'text-slate-700 hover:text-slate-900'
+                        }`}
+                      >
+                        Nog niet door mij beoordeeld ({unratedHousesCount})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setVoteFilter('wel_beoordeeld')}
+                        className={`min-h-[32px] px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          voteFilter === 'wel_beoordeeld'
+                            ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        Al beoordeeld ({Math.max(0, activeHouses.length - unratedHousesCount)})
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Search input */}
@@ -1714,24 +1835,29 @@ function MainApplication() {
               >
                 <Bike className="w-8 h-8 text-slate-400 mx-auto" />
                 <h3 className="text-base font-bold text-slate-900">
-                  Nog geen vakantiehuizen in deze centrale lijst
+                  {voteFilter === 'nog_niet_beoordeeld' && activeHouses.length > 0
+                    ? 'Je hebt alle huisjes al beoordeeld!'
+                    : 'Nog geen vakantiehuizen in deze weergave'}
                 </h3>
                 <p className="text-xs text-slate-500 max-w-md mx-auto">
                   {activeHouses.length === 0
                     ? 'De centrale groepslijst is momenteel leeg (voorbeeldhuisjes worden nooit automatisch teruggezet). Voeg het eerste echte voorstel toe!'
+                    : voteFilter === 'nog_niet_beoordeeld'
+                    ? 'Goed bezig! Je hebt op elk huisje in deze selectie al een stem uitgebracht.'
                     : 'Geen huisjes gevonden met de huidige zoekopdracht of filter.'}
                 </p>
                 <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
-                  {(facilityFilter !== 'alle' || searchQuery.trim()) && (
+                  {(facilityFilter !== 'alle' || voteFilter !== 'alle' || searchQuery.trim()) && (
                     <button
                       type="button"
                       onClick={() => {
                         setFacilityFilter('alle');
+                        setVoteFilter('alle');
                         setSearchQuery('');
                       }}
                       className="min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
                     >
-                      Filters wissen
+                      Toon alle huisjes
                     </button>
                   )}
                   {isVerifiedMember ? (
@@ -1774,7 +1900,8 @@ function MainApplication() {
                 <div className="divide-y divide-slate-200">
                   {displayedHouses.map((house) => {
                     const pricePerPerson = Math.round(house.totalPrice / Math.max(1, cyclistCount));
-                    const isFavorite = house.id === favoriteHouseId && house.voteScore > 0;
+                    const ratingSummary = getHouseRatingSummary(house);
+                    const isFavorite = house.id === favoriteHouseId && ratingSummary.average > 0;
                     const isOwnerOrAdmin = canModifyRecord(house.ownerId);
                     return (
                       <div
@@ -1798,7 +1925,7 @@ function MainApplication() {
                             <span>Door {house.addedBy}</span>
                             <span>·</span>
                             <span className="font-mono-num font-semibold text-slate-800">
-                              {house.voteScore} pt
+                              {ratingSummary.formattedLabel}
                             </span>
                           </div>
                         </div>
@@ -1846,7 +1973,8 @@ function MainApplication() {
               /* DETAILED HOUSE CARDS */
               <div className="space-y-4">
                 {displayedHouses.map((house) => {
-                  const isFavorite = house.id === favoriteHouseId && house.voteScore > 0;
+                  const ratingSummary = getHouseRatingSummary(house);
+                  const isFavorite = house.id === favoriteHouseId && ratingSummary.average > 0;
                   const isSelected = house.id === selectedHouseId;
                   const pricePerPerson = Math.round(house.totalPrice / Math.max(1, cyclistCount));
                   const pricePerNightPP = Math.round(pricePerPerson / 3);
@@ -1876,10 +2004,10 @@ function MainApplication() {
                         <div className="bg-amber-500/10 border-b border-amber-300/60 px-4 py-2 flex items-center justify-between gap-2 text-xs">
                           <span className="font-bold text-amber-900 flex items-center gap-1.5">
                             <Trophy className="w-4 h-4 text-amber-600 shrink-0" />
-                            <span>Groepsfavoriet 🏆 — Meeste stemmen</span>
+                            <span>Groepsfavoriet 🏆 — Hoogste gemiddelde</span>
                           </span>
                           <span className="font-mono-num font-semibold text-amber-800 shrink-0">
-                            {house.voteScore} pt ({house.voteCount})
+                            {ratingSummary.formattedLabel}
                           </span>
                         </div>
                       )}
@@ -2064,8 +2192,11 @@ function MainApplication() {
                       <div className="bg-slate-50 border-t border-slate-200 px-3 sm:px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
                         {/* Rating / Upvote & Star Buttons */}
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-xs font-semibold text-slate-700 font-mono-num">
-                            Score: {house.voteScore} pt ({house.voteCount} stemmen)
+                          <span
+                            data-testid={`house-rating-label-${house.id}`}
+                            className="text-xs font-semibold text-slate-700 font-mono-num"
+                          >
+                            {ratingSummary.formattedLabel}
                           </span>
                           <span className="text-slate-300 hidden sm:inline" aria-hidden="true">|</span>
                           <div className="flex items-center gap-0.5">
@@ -2324,7 +2455,8 @@ function MainApplication() {
                   <tbody className="divide-y divide-slate-200">
                     {activeHouses.map((house) => {
                       const pp = Math.round(house.totalPrice / Math.max(1, cyclistCount));
-                      const isFav = house.id === favoriteHouseId && house.voteScore > 0;
+                      const ratingSummary = getHouseRatingSummary(house);
+                      const isFav = house.id === favoriteHouseId && ratingSummary.average > 0;
                       const isOwnerOrAdmin = canModifyRecord(house.ownerId);
                       const extras: string[] = [];
                       if (house.hasBbq) extras.push('BBQ');
@@ -2368,7 +2500,7 @@ function MainApplication() {
                             €{pp} p.p.
                           </td>
                           <td className="py-3.5 px-4 text-right font-mono-num text-slate-700 whitespace-nowrap">
-                            {house.voteScore} pt ({house.voteCount})
+                            {ratingSummary.compactLabel}
                           </td>
                           <td className="py-3.5 px-4 text-right whitespace-nowrap">
                             <div className="inline-flex items-center justify-end gap-1.5">
@@ -2519,19 +2651,34 @@ function MainApplication() {
             </div>
           </div>
 
-          {/* Main Grid: Add Participant Form + Participants Table */}
+          {/* Main Grid: Add / Edit Participant Form + Participants Table */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* Left 4 cols: Add Participant Form */}
+            {/* Left 4 cols: Add or Edit Participant Form */}
             <form
               onSubmit={handleAddParticipant}
               noValidate
               data-testid="add-participant-form"
-              className="lg:col-span-4 bg-white rounded-xl border border-slate-200 p-4 sm:p-5 space-y-4"
+              className={`lg:col-span-4 bg-white rounded-xl border p-4 sm:p-5 space-y-4 ${
+                editingParticipantId ? 'border-[#FC4C02] ring-2 ring-[#FC4C02]/20' : 'border-slate-200'
+              }`}
             >
-              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <Car className="w-4 h-4 text-[#FC4C02]" />
-                Deelnemer Toevoegen aan Lijst
-              </h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Car className="w-4 h-4 text-[#FC4C02]" />
+                  {editingParticipantId
+                    ? 'Vervoersgegevens Wijzigen'
+                    : 'Deelnemer Toevoegen aan Lijst'}
+                </h3>
+                {editingParticipantId && (
+                  <button
+                    type="button"
+                    onClick={handleCancelEditParticipant}
+                    className="text-xs font-semibold text-slate-500 hover:text-slate-800 cursor-pointer"
+                  >
+                    Annuleren
+                  </button>
+                )}
+              </div>
 
               <div>
                 <label
@@ -2681,21 +2828,39 @@ function MainApplication() {
                 </div>
               )}
 
-              <button
-                type="submit"
-                disabled={!isVerifiedMember}
-                data-testid="participant-submit-btn"
-                className="w-full min-h-[42px] py-2.5 rounded-lg bg-[#FC4C02] hover:bg-[#E04300] text-white text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isVerifiedMember ? '+ Deelnemer Toevoegen' : 'Log in om deelnemer toe te voegen'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  disabled={!isVerifiedMember}
+                  data-testid="participant-submit-btn"
+                  className="w-full min-h-[42px] py-2.5 rounded-lg bg-[#FC4C02] hover:bg-[#E04300] text-white text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {!isVerifiedMember
+                    ? 'Log in om deelnemer op te slaan'
+                    : editingParticipantId
+                    ? 'Wijzigingen Opslaan'
+                    : '+ Deelnemer Toevoegen'}
+                </button>
+                {editingParticipantId && (
+                  <button
+                    type="button"
+                    onClick={handleCancelEditParticipant}
+                    className="min-h-[42px] px-3.5 py-2.5 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer shrink-0"
+                  >
+                    Annuleren
+                  </button>
+                )}
+              </div>
             </form>
 
             {/* Right 8 cols: Interactive Participants Table */}
             <div className="lg:col-span-8 bg-white rounded-xl border border-slate-200 overflow-hidden">
-              <div className="px-4 sm:px-5 py-3.5 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+              <div className="px-4 sm:px-5 py-3.5 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-bold text-slate-800">
                   Deelnemerslijst ({activeParticipants.length} personen)
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  Klik direct op Chauffeur / + / − of op &ldquo;Wijzig&rdquo; om alle variabelen aan te passen
                 </span>
               </div>
 
@@ -2720,21 +2885,24 @@ function MainApplication() {
                     <tbody className="divide-y divide-slate-200">
                       {activeParticipants.map((p) => {
                         const isOwnerOrAdmin = canModifyRecord(p.ownerId);
+                        const isBeingEdited = editingParticipantId === p.id;
                         return (
                           <tr
                             key={p.id}
                             data-testid={`participant-row-${p.id}`}
-                            className="hover:bg-slate-50 transition-colors"
+                            className={`transition-colors ${
+                              isBeingEdited ? 'bg-orange-50/70' : 'hover:bg-slate-50'
+                            }`}
                           >
                             <td className="py-3.5 px-4 font-bold text-slate-900 text-sm whitespace-nowrap">
                               {p.name}
                             </td>
 
-                            {/* Toggle Driver status directly */}
+                            {/* Toggle Driver status directly for any verified member */}
                             <td className="py-3.5 px-4 whitespace-nowrap">
                               <button
                                 type="button"
-                                disabled={!isOwnerOrAdmin}
+                                disabled={!isVerifiedMember}
                                 onClick={() =>
                                   handleUpdateParticipant(p, {
                                     isDriver: !p.isDriver,
@@ -2745,8 +2913,8 @@ function MainApplication() {
                                 }
                                 className={`min-h-[32px] px-2.5 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${
                                   p.isDriver
-                                    ? 'bg-slate-900 text-white'
-                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                    ? 'bg-slate-900 text-white hover:bg-slate-800'
+                                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                                 }`}
                               >
                                 {p.isDriver ? 'Ja, chauffeur 🚗' : 'Nee, meerijder'}
@@ -2759,7 +2927,7 @@ function MainApplication() {
                                 <div className="inline-flex items-center gap-1.5 font-mono-num">
                                   <button
                                     type="button"
-                                    disabled={!isOwnerOrAdmin}
+                                    disabled={!isVerifiedMember}
                                     onClick={() =>
                                       handleUpdateParticipant(p, {
                                         carSeats: Math.max(1, p.carSeats - 1),
@@ -2774,10 +2942,10 @@ function MainApplication() {
                                   </span>
                                   <button
                                     type="button"
-                                    disabled={!isOwnerOrAdmin}
+                                    disabled={!isVerifiedMember}
                                     onClick={() =>
                                       handleUpdateParticipant(p, {
-                                        carSeats: Math.min(9, p.carSeats + 1),
+                                        carSeats: Math.min(15, p.carSeats + 1),
                                       })
                                     }
                                     className="w-7 h-7 rounded border border-slate-300 hover:bg-slate-100 font-bold text-slate-700 cursor-pointer disabled:opacity-40"
@@ -2796,7 +2964,7 @@ function MainApplication() {
                                 <div className="inline-flex items-center gap-1.5 font-mono-num">
                                   <button
                                     type="button"
-                                    disabled={!isOwnerOrAdmin}
+                                    disabled={!isVerifiedMember}
                                     onClick={() =>
                                       handleUpdateParticipant(p, {
                                         bikeSpots: Math.max(0, p.bikeSpots - 1),
@@ -2814,7 +2982,7 @@ function MainApplication() {
                                   </span>
                                   <button
                                     type="button"
-                                    disabled={!isOwnerOrAdmin}
+                                    disabled={!isVerifiedMember}
                                     onClick={() =>
                                       handleUpdateParticipant(p, {
                                         bikeSpots: Math.min(15, p.bikeSpots + 1),
@@ -2830,21 +2998,34 @@ function MainApplication() {
                               )}
                             </td>
 
-                            <td className="py-3.5 px-4 text-slate-600 max-w-[220px] truncate">
+                            <td className="py-3.5 px-4 text-slate-600 max-w-[200px] truncate">
                               {p.notes || <span className="text-slate-400">–</span>}
                             </td>
 
                             <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                              {isOwnerOrAdmin && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteParticipant(p)}
-                                  className="min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-red-600 hover:bg-red-50 font-medium cursor-pointer"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                  Verwijder
-                                </button>
-                              )}
+                              <div className="inline-flex items-center justify-end gap-1.5">
+                                {isVerifiedMember && (
+                                  <button
+                                    type="button"
+                                    data-testid={`edit-participant-${p.id}`}
+                                    onClick={() => handleStartEditParticipant(p)}
+                                    className="min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5" />
+                                    Wijzig
+                                  </button>
+                                )}
+                                {isOwnerOrAdmin && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteParticipant(p)}
+                                    className="min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-red-600 hover:bg-red-50 font-medium cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    Verwijder
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );
