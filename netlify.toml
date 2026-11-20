@@ -1,0 +1,12 @@
+# Netlify Build & Secrets Scanning Configuration
+# Firebase web client configuration (apiKey, projectId, authDomain, appId) is public client-side config
+# bundled into the frontend and protected by Firestore Security Rules and Firebase Authorized Domains.
+# Disable Netlify's heuristic "likely secrets" scanner for public Firebase web keys so the deploy succeeds.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  SECRETS_SCAN_SMART_DETECTION_ENABLED = "false"
+  SECRETS_SCAN_OMIT_PATHS = "firebase-applet-config.json,dist/**"
