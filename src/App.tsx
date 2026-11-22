@@ -345,11 +345,51 @@ function MainApplication() {
         const userRef = doc(db, 'user_accounts', currentUser.uid);
         const userSnap = await getDoc(userRef);
 
+        // Also check if there is a synced participant record (`lid-...`) or pre-registration (`invite-...`) matching this user's UID, email, or name
+        try {
+          const allGroupUsersSnap = await getDocs(
+            query(
+              collection(db, 'user_accounts'),
+              where('groupId', '==', 'racefiets-2027')
+            )
+          );
+          for (const d of allGroupUsersSnap.docs) {
+            if (d.id === currentUser.uid) continue;
+            const dData = d.data();
+            const dEmail = (dData.email || '').toLowerCase();
+            const dName = (dData.displayName || '').trim().toLowerCase();
+            const isPlaceholder = dEmail.endsWith('@kopgroep27.nl');
+            const matchesUid = dData.uid === currentUser.uid;
+            const matchesName =
+              dName &&
+              (dName === defaultName.toLowerCase() ||
+                dName === (currentUser.displayName || '').trim().toLowerCase());
+
+            if (isPlaceholder && (matchesUid || matchesName) && emailLower) {
+              await updateDoc(doc(db, 'user_accounts', d.id), {
+                uid: currentUser.uid,
+                email: emailLower,
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+        } catch {
+          // Ignore sync lookup errors
+        }
+
         if (userSnap.exists()) {
           const data = userSnap.data();
-          if (isBrokelman && data.role !== 'super_admin') {
+          const needsRoleFix = isBrokelman && data.role !== 'super_admin';
+          const needsEmailFix =
+            emailLower &&
+            (!data.email ||
+              data.email.endsWith('@kopgroep27.nl') ||
+              data.email === 'onbekend@kopgroep27.nl');
+
+          if (needsRoleFix || needsEmailFix) {
             await updateDoc(userRef, {
-              role: 'super_admin',
+              ...(needsRoleFix ? { role: 'super_admin' } : {}),
+              ...(needsEmailFix ? { email: emailLower } : {}),
               updatedAt: serverTimestamp(),
             });
           }
@@ -364,7 +404,7 @@ function MainApplication() {
             );
           }
         } else {
-          // Check if an admin pre-registered this user by email
+          // Check if an admin pre-registered this user by email or if a synced participant record exists
           let initialGroupId = 'racefiets-2027';
           let initialGroupIds: string[] = ['racefiets-2027'];
           let initialRole: UserRole = isBrokelman ? 'super_admin' : 'member';
@@ -377,11 +417,18 @@ function MainApplication() {
                 where('groupId', '==', 'racefiets-2027')
               )
             );
-            const matchedDocs = preRegSnap.docs.filter(
-              (d) =>
-                (d.data().email || '').toLowerCase() === emailLower &&
-                d.id.startsWith('invite-')
-            );
+            const matchedDocs = preRegSnap.docs.filter((d) => {
+              const dData = d.data();
+              const dEmail = (dData.email || '').toLowerCase();
+              const dName = (dData.displayName || '').trim().toLowerCase();
+              return (
+                (dEmail === emailLower && d.id.startsWith('invite-')) ||
+                dData.uid === currentUser.uid ||
+                (d.id.startsWith('lid-') &&
+                  (dName === defaultName.toLowerCase() ||
+                    dName === (currentUser.displayName || '').trim().toLowerCase()))
+              );
+            });
             if (matchedDocs.length > 0) {
               const md = matchedDocs[0].data();
               initialGroupId = md.groupId || 'racefiets-2027';
@@ -2139,7 +2186,7 @@ function MainApplication() {
     cloudUsers.length,
   ]);
 
-  // Ensure visibleUsers passed to UserGroupAdminView always includes currentUserAccount + any activeParticipants not yet written
+  // Ensure visibleUsers passed to UserGroupAdminView always includes currentUserAccount + any activeParticipants not yet written, while deduplicating placeholder rows against real logged-in accounts
   const mergedUsersForAdminView: UserAccountRecord[] = useMemo(() => {
     const mapById = new Map<string, UserAccountRecord>();
     cloudUsers.forEach((u) => mapById.set(u.id, u));
@@ -2147,6 +2194,25 @@ function MainApplication() {
     if (currentUserAccount && !mapById.has(currentUserAccount.id)) {
       mapById.set(currentUserAccount.id, currentUserAccount);
     }
+
+    // Deduplicate: if a real logged-in user (non-@kopgroep27.nl) has the same displayName or uid in the same group as a placeholder `lid-...` record, hide the placeholder record
+    const allEntries = Array.from(mapById.values());
+    const realUsers = allEntries.filter(
+      (u) => !u.email.endsWith('@kopgroep27.nl') && !u.id.startsWith('lid-')
+    );
+
+    allEntries.forEach((u) => {
+      if (u.email.endsWith('@kopgroep27.nl') || u.id.startsWith('lid-')) {
+        const hasRealMatch = realUsers.some(
+          (r) =>
+            r.uid === u.uid ||
+            r.displayName.trim().toLowerCase() === u.displayName.trim().toLowerCase()
+        );
+        if (hasRealMatch) {
+          mapById.delete(u.id);
+        }
+      }
+    });
 
     const existingNamesInActiveGroup = new Set(
       Array.from(mapById.values())

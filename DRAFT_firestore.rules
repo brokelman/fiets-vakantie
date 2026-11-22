@@ -330,11 +330,11 @@ service cloud.firestore {
       allow update: if isVerifiedUser() &&
         isValidId(userId) &&
         isValidUserAccount(incoming()) &&
-        incoming().uid == existing().uid &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
           (
+            incoming().uid == existing().uid &&
             isGroupAdminOf(existing().groupId) &&
             incoming().groupId == existing().groupId &&
             existing().role != 'super_admin' &&
@@ -342,10 +342,10 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'role', 'groupIds', 'hasPaid', 'amountPaid', 'updatedAt'])
           ) ||
           (
-            request.auth.uid == userId &&
+            (request.auth.uid == userId || existing().uid == request.auth.uid || userId.matches('^lid-.+') || userId.matches('^invite-.+')) &&
             incoming().role == existing().role &&
             incoming().groupId == existing().groupId &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'groupIds', 'updatedAt'])
+            incoming().diff(existing()).affectedKeys().hasOnly(['uid', 'displayName', 'email', 'groupIds', 'updatedAt'])
           )
         );
 
