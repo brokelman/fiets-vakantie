@@ -529,12 +529,12 @@ function MainApplication() {
     }
 
     const unsubGroups = onSnapshot(
-      collection(db, 'groups'),
+      query(collection(db, 'groups'), where('tripId', '>=', '')),
       (snap) => {
         const list: GroupRecord[] = snap.docs.map((docSnap) => {
           const d = docSnap.data();
           const tripId = d.tripId || docSnap.id;
-          const isDefaultGroup = tripId === 'racefiets-2027';
+          const isDefaultGroup = tripId === 'racefiets-2027' || docSnap.id === 'racefiets-2027';
           return {
             id: docSnap.id,
             tripId,
@@ -647,7 +647,9 @@ function MainApplication() {
 
   // Active Group Record (with safe fallback for 'racefiets-2027')
   const activeGroupRecord: GroupRecord = useMemo(() => {
-    const found = cloudGroups.find((g) => g.tripId === activeTripId);
+    const found = cloudGroups.find(
+      (g) => g.tripId === activeTripId || g.id === activeTripId
+    );
     if (found) return found;
     return {
       id: activeTripId,
@@ -667,7 +669,9 @@ function MainApplication() {
   }, [cloudGroups, activeTripId, currentUser]);
 
   const allGroupsWithDefault: GroupRecord[] = useMemo(() => {
-    const hasDefault = cloudGroups.some((g) => g.tripId === 'racefiets-2027');
+    const hasDefault = cloudGroups.some(
+      (g) => g.tripId === 'racefiets-2027' || g.id === 'racefiets-2027'
+    );
     if (hasDefault) return cloudGroups;
     return [
       {
@@ -1804,22 +1808,50 @@ function MainApplication() {
   }) => {
     if (!isSuperAdmin || !currentUser) return;
     const cleanTripId = sanitizeId(payload.tripId);
+    const cleanName = payload.name.trim().slice(0, 80) || 'Fietsgroep';
+    const cleanStart = payload.startDate.slice(0, 10);
+    const cleanEnd = (payload.endDate || payload.startDate).slice(0, 10);
+    const cleanPeriod = payload.periodLabel.trim().slice(0, 80) || 'Mei 2027';
+    const cleanRegion = payload.regionLabel.trim().slice(0, 100) || 'Ardennen / Limburg';
+    const nowIso = new Date().toISOString();
+
     try {
       await setDoc(doc(db, 'groups', cleanTripId), {
         tripId: cleanTripId,
-        name: payload.name.slice(0, 80),
-        startDate: payload.startDate.slice(0, 10),
-        endDate: (payload.endDate || payload.startDate).slice(0, 10),
-        periodLabel: payload.periodLabel.slice(0, 80),
-        regionLabel: payload.regionLabel.slice(0, 100),
+        name: cleanName,
+        startDate: cleanStart,
+        endDate: cleanEnd,
+        periodLabel: cleanPeriod,
+        regionLabel: cleanRegion,
         chosenHouseId: '',
         chosenHouseTitle: '',
         createdBy: currentUser.uid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      setCloudGroups((prev) => {
+        const filtered = prev.filter((g) => g.tripId !== cleanTripId && g.id !== cleanTripId);
+        return [
+          ...filtered,
+          {
+            id: cleanTripId,
+            tripId: cleanTripId,
+            name: cleanName,
+            startDate: cleanStart,
+            endDate: cleanEnd,
+            periodLabel: cleanPeriod,
+            regionLabel: cleanRegion,
+            reviewReminderSentAt: '',
+            chosenHouseId: '',
+            chosenHouseTitle: '',
+            createdBy: currentUser.uid,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          },
+        ];
+      });
       setSelectedGroupId(cleanTripId);
-      showToast(`Nieuwe groep "${payload.name}" (${payload.periodLabel}) is aangemaakt!`);
+      showToast(`Nieuwe groep "${cleanName}" (${cleanPeriod}) is aangemaakt!`);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `groups/${cleanTripId}`);
     }
@@ -1837,7 +1869,19 @@ function MainApplication() {
     }
   ) => {
     if (!currentUser) return;
-    const groupRef = doc(db, 'groups', groupId);
+    // Find existing group doc if its Firestore doc ID differs from tripId
+    const matchedInState = cloudGroups.find(
+      (g) => g.tripId === groupId || g.id === groupId
+    );
+    const targetDocId = matchedInState?.id || groupId;
+    const groupRef = doc(db, 'groups', targetDocId);
+
+    const cleanName = payload.name.trim().slice(0, 80) || 'Fietsgroep';
+    const cleanStart = (payload.startDate || '2027-05-27').slice(0, 10);
+    const cleanEnd = (payload.endDate || payload.startDate || '2027-05-30').slice(0, 10);
+    const cleanPeriod = payload.periodLabel.trim().slice(0, 80) || 'Mei 2027';
+    const cleanRegion = payload.regionLabel.trim().slice(0, 100) || 'Ardennen / Limburg';
+
     try {
       const existingGroupSnap = await getDoc(groupRef);
       const existingGroupData = existingGroupSnap.exists() ? existingGroupSnap.data() : null;
@@ -1847,21 +1891,24 @@ function MainApplication() {
           ? existingGroupData.createdBy
           : currentUser.uid;
 
+      const safeChosenHouseId =
+        typeof existingGroupData?.chosenHouseId === 'string'
+          ? existingGroupData.chosenHouseId.slice(0, 128)
+          : matchedInState?.chosenHouseId || '';
+      const safeChosenHouseTitle =
+        typeof existingGroupData?.chosenHouseTitle === 'string'
+          ? existingGroupData.chosenHouseTitle.slice(0, 120)
+          : matchedInState?.chosenHouseTitle || '';
+
       const fullGroupDoc: Record<string, any> = {
-        tripId: groupId,
-        name: payload.name.trim().slice(0, 80) || 'Fietsgroep',
-        startDate: (payload.startDate || '').slice(0, 10),
-        endDate: (payload.endDate || payload.startDate || '').slice(0, 10),
-        periodLabel: payload.periodLabel.trim().slice(0, 80) || 'Mei 2027',
-        regionLabel: payload.regionLabel.trim().slice(0, 100) || 'Ardennen / Limburg',
-        chosenHouseId:
-          typeof existingGroupData?.chosenHouseId === 'string'
-            ? existingGroupData.chosenHouseId.slice(0, 128)
-            : '',
-        chosenHouseTitle:
-          typeof existingGroupData?.chosenHouseTitle === 'string'
-            ? existingGroupData.chosenHouseTitle.slice(0, 120)
-            : '',
+        tripId: targetDocId,
+        name: cleanName,
+        startDate: cleanStart,
+        endDate: cleanEnd,
+        periodLabel: cleanPeriod,
+        regionLabel: cleanRegion,
+        chosenHouseId: safeChosenHouseId,
+        chosenHouseTitle: safeChosenHouseTitle,
         createdBy: safeCreatedBy,
         createdAt:
           existingGroupData?.createdAt && typeof existingGroupData.createdAt.toDate === 'function'
@@ -1878,9 +1925,50 @@ function MainApplication() {
       }
 
       await setDoc(groupRef, fullGroupDoc);
-      showToast(`Groepsgegevens & vakantiedatum van "${payload.name}" zijn bijgewerkt!`);
+
+      const nowIso = new Date().toISOString();
+      setCloudGroups((prev) => {
+        const exists = prev.some((g) => g.id === targetDocId || g.tripId === groupId);
+        if (exists) {
+          return prev.map((g) =>
+            g.id === targetDocId || g.tripId === groupId
+              ? {
+                  ...g,
+                  name: cleanName,
+                  startDate: cleanStart,
+                  endDate: cleanEnd,
+                  periodLabel: cleanPeriod,
+                  regionLabel: cleanRegion,
+                  chosenHouseId: safeChosenHouseId,
+                  chosenHouseTitle: safeChosenHouseTitle,
+                  updatedAt: nowIso,
+                }
+              : g
+          );
+        }
+        return [
+          ...prev,
+          {
+            id: targetDocId,
+            tripId: targetDocId,
+            name: cleanName,
+            startDate: cleanStart,
+            endDate: cleanEnd,
+            periodLabel: cleanPeriod,
+            regionLabel: cleanRegion,
+            reviewReminderSentAt: '',
+            chosenHouseId: safeChosenHouseId,
+            chosenHouseTitle: safeChosenHouseTitle,
+            createdBy: safeCreatedBy,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          },
+        ];
+      });
+
+      showToast(`Groepsnaam & gegevens bijgewerkt naar "${cleanName}"!`);
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `groups/${groupId}`);
+      handleFirestoreError(error, OperationType.UPDATE, `groups/${targetDocId}`);
     }
   };
 
