@@ -283,14 +283,16 @@ service cloud.firestore {
       allow update: if isVerifiedUser() &&
         isValidGroupId(groupId) &&
         isValidGroup(incoming()) &&
-        incoming().tripId == existing().tripId &&
-        incoming().createdBy == existing().createdBy &&
-        incoming().createdAt == existing().createdAt &&
+        incoming().tripId == groupId &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
           isGroupAdminOf(groupId) ||
           // Any verified group member can register the group's chosen house or mark the review reminder as sent
-          incoming().diff(existing()).affectedKeys().hasOnly(['chosenHouseId', 'chosenHouseTitle', 'reviewReminderSentAt', 'updatedAt'])
+          (
+            incoming().createdBy == existing().createdBy &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['chosenHouseId', 'chosenHouseTitle', 'reviewReminderSentAt', 'updatedAt'])
+          )
         );
 
       allow delete: if isAdmin() && isValidGroupId(groupId);

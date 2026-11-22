@@ -1632,29 +1632,52 @@ function MainApplication() {
     }
 
     // Also mark as chosenHouseId on the group document
-    const groupAlreadyExists = cloudGroups.some((g) => g.id === activeTripId || g.tripId === activeTripId);
     try {
-      if (groupAlreadyExists) {
-        await updateDoc(groupDocRef, {
-          chosenHouseId: house.id,
-          chosenHouseTitle: normalizedTitle,
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        await setDoc(groupDocRef, {
-          tripId: activeTripId,
-          name: normalizedGroupName,
-          periodLabel: (activeGroupRecord.periodLabel || 'Mei 2027').slice(0, 80),
-          regionLabel: (activeGroupRecord.regionLabel || 'Ardennen / Limburg').slice(0, 100),
-          startDate: (activeGroupRecord.startDate || '2027-05-27').slice(0, 10),
-          endDate: (activeGroupRecord.endDate || '2027-05-30').slice(0, 10),
-          chosenHouseId: house.id,
-          chosenHouseTitle: normalizedTitle,
-          createdBy: currentUser.uid,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+      const existingGroupSnap = await getDoc(groupDocRef);
+      const existingGroupData = existingGroupSnap.exists() ? existingGroupSnap.data() : null;
+      const safePeriodLabel = (
+        (existingGroupData?.periodLabel || activeGroupRecord.periodLabel || 'Mei 2027').trim()
+      ).slice(0, 80);
+      const safeRegionLabel = (
+        (existingGroupData?.regionLabel || activeGroupRecord.regionLabel || 'Ardennen / Limburg').trim()
+      ).slice(0, 100);
+      const safeStartDate = (
+        existingGroupData?.startDate || activeGroupRecord.startDate || '2027-05-27'
+      ).slice(0, 10);
+      const safeEndDate = (
+        existingGroupData?.endDate || activeGroupRecord.endDate || '2027-05-30'
+      ).slice(0, 10);
+      const safeCreatedBy =
+        typeof existingGroupData?.createdBy === 'string' &&
+        /^[a-zA-Z0-9_-]{1,128}$/.test(existingGroupData.createdBy)
+          ? existingGroupData.createdBy
+          : currentUser.uid;
+
+      const fullGroupDoc: Record<string, any> = {
+        tripId: activeTripId,
+        name: normalizedGroupName,
+        periodLabel: safePeriodLabel.length >= 2 ? safePeriodLabel : 'Mei 2027',
+        regionLabel: safeRegionLabel.length >= 2 ? safeRegionLabel : 'Ardennen / Limburg',
+        startDate: safeStartDate,
+        endDate: safeEndDate,
+        chosenHouseId: cleanSourceHouseId,
+        chosenHouseTitle: normalizedTitle,
+        createdBy: safeCreatedBy,
+        createdAt:
+          existingGroupData?.createdAt && typeof existingGroupData.createdAt.toDate === 'function'
+            ? existingGroupData.createdAt
+            : serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+
+      if (
+        typeof existingGroupData?.reviewReminderSentAt === 'string' &&
+        existingGroupData.reviewReminderSentAt.length <= 40
+      ) {
+        fullGroupDoc.reviewReminderSentAt = existingGroupData.reviewReminderSentAt;
       }
+
+      await setDoc(groupDocRef, fullGroupDoc);
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `groups/${activeTripId}`);
     }
@@ -1738,8 +1761,8 @@ function MainApplication() {
       await setDoc(doc(db, 'groups', cleanTripId), {
         tripId: cleanTripId,
         name: payload.name.slice(0, 80),
-        startDate: payload.startDate,
-        endDate: payload.endDate || payload.startDate,
+        startDate: payload.startDate.slice(0, 10),
+        endDate: (payload.endDate || payload.startDate).slice(0, 10),
         periodLabel: payload.periodLabel.slice(0, 80),
         regionLabel: payload.regionLabel.slice(0, 100),
         chosenHouseId: '',
@@ -1768,32 +1791,46 @@ function MainApplication() {
   ) => {
     if (!currentUser) return;
     const groupRef = doc(db, 'groups', groupId);
-    const groupExists = cloudGroups.some((g) => g.id === groupId || g.tripId === groupId);
     try {
-      if (groupExists) {
-        await updateDoc(groupRef, {
-          name: payload.name.slice(0, 80),
-          startDate: payload.startDate,
-          endDate: payload.endDate || payload.startDate,
-          periodLabel: payload.periodLabel.slice(0, 80),
-          regionLabel: payload.regionLabel.slice(0, 100),
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        await setDoc(groupRef, {
-          tripId: groupId,
-          name: payload.name.slice(0, 80),
-          startDate: payload.startDate,
-          endDate: payload.endDate || payload.startDate,
-          periodLabel: payload.periodLabel.slice(0, 80),
-          regionLabel: payload.regionLabel.slice(0, 100),
-          chosenHouseId: '',
-          chosenHouseTitle: '',
-          createdBy: currentUser.uid,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+      const existingGroupSnap = await getDoc(groupRef);
+      const existingGroupData = existingGroupSnap.exists() ? existingGroupSnap.data() : null;
+      const safeCreatedBy =
+        typeof existingGroupData?.createdBy === 'string' &&
+        /^[a-zA-Z0-9_-]{1,128}$/.test(existingGroupData.createdBy)
+          ? existingGroupData.createdBy
+          : currentUser.uid;
+
+      const fullGroupDoc: Record<string, any> = {
+        tripId: groupId,
+        name: payload.name.trim().slice(0, 80) || 'Fietsgroep',
+        startDate: (payload.startDate || '').slice(0, 10),
+        endDate: (payload.endDate || payload.startDate || '').slice(0, 10),
+        periodLabel: payload.periodLabel.trim().slice(0, 80) || 'Mei 2027',
+        regionLabel: payload.regionLabel.trim().slice(0, 100) || 'Ardennen / Limburg',
+        chosenHouseId:
+          typeof existingGroupData?.chosenHouseId === 'string'
+            ? existingGroupData.chosenHouseId.slice(0, 128)
+            : '',
+        chosenHouseTitle:
+          typeof existingGroupData?.chosenHouseTitle === 'string'
+            ? existingGroupData.chosenHouseTitle.slice(0, 120)
+            : '',
+        createdBy: safeCreatedBy,
+        createdAt:
+          existingGroupData?.createdAt && typeof existingGroupData.createdAt.toDate === 'function'
+            ? existingGroupData.createdAt
+            : serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+
+      if (
+        typeof existingGroupData?.reviewReminderSentAt === 'string' &&
+        existingGroupData.reviewReminderSentAt.length <= 40
+      ) {
+        fullGroupDoc.reviewReminderSentAt = existingGroupData.reviewReminderSentAt;
       }
+
+      await setDoc(groupRef, fullGroupDoc);
       showToast(`Groepsgegevens & vakantiedatum van "${payload.name}" zijn bijgewerkt!`);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `groups/${groupId}`);
