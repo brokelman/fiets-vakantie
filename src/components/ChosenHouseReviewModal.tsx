@@ -40,9 +40,13 @@ export const ChosenHouseReviewModal: React.FC<ChosenHouseReviewModalProps> = ({
           ? existingRepoEntry.reviewText
           : house.notes
           ? `Top uitvalsbasis voor ${activeGroupName}! ${house.notes}`
-          : ''
+          : `Gekozen als ons huisje voor ${activeGroupName}!`
       );
-      setReviewerName(existingRepoEntry ? existingRepoEntry.reviewerName : defaultReviewerName);
+      setReviewerName(
+        existingRepoEntry
+          ? existingRepoEntry.reviewerName
+          : defaultReviewerName || 'Groepslid'
+      );
       setError(null);
     }
   }, [house, isOpen, existingRepoEntry, activeGroupName, defaultReviewerName]);
@@ -51,17 +55,9 @@ export const ChosenHouseReviewModal: React.FC<ChosenHouseReviewModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanReview = reviewText.trim();
-    const cleanReviewer = reviewerName.trim();
-
-    if (cleanReview.length < 2) {
-      setError('Schrijf een korte review of ervaring van minimaal 2 tekens.');
-      return;
-    }
-    if (!cleanReviewer) {
-      setError('Vul je naam in als auteur van de groepsreview.');
-      return;
-    }
+    const cleanReview =
+      reviewText.trim() || `Gekozen als ons huisje voor ${activeGroupName}!`;
+    const cleanReviewer = reviewerName.trim() || defaultReviewerName || 'Groepslid';
 
     setError(null);
     setIsSaving(true);

@@ -267,7 +267,7 @@ service cloud.firestore {
 
     // 4. Collection Rules: /groups/{groupId}
     match /groups/{groupId} {
-      allow get: if isValidGroupId(groupId) && isValidGroupId(resource.data.tripId);
+      allow get: if isValidGroupId(groupId) && (isVerifiedUser() || isValidGroupId(resource.data.tripId));
       allow list: if resource.data.tripId is string;
 
       allow create: if isVerifiedUser() &&
@@ -356,7 +356,7 @@ service cloud.firestore {
 
     // 6. Collection Rules: /repository_houses/{repoHouseId}
     match /repository_houses/{repoHouseId} {
-      allow get: if isValidId(repoHouseId) && resource.data.ratingStars >= 1 && resource.data.ratingStars <= 5;
+      allow get: if isValidId(repoHouseId) && (isVerifiedUser() || (resource.data.ratingStars >= 1 && resource.data.ratingStars <= 5));
       allow list: if resource.data.ratingStars >= 1 && resource.data.ratingStars <= 5;
 
       allow create: if isVerifiedUser() &&
@@ -388,7 +388,7 @@ service cloud.firestore {
 
     // 7. Collection Rules: /houses/{houseId}
     match /houses/{houseId} {
-      allow get: if isValidId(houseId) && isValidGroupId(resource.data.tripId);
+      allow get: if isValidId(houseId) && (isVerifiedUser() || isValidGroupId(resource.data.tripId));
       allow list: if isValidGroupId(resource.data.tripId);
 
       allow create: if isVerifiedUser() &&
@@ -433,7 +433,7 @@ service cloud.firestore {
 
       // Subcollection: /houses/{houseId}/votes/{voteId}
       match /votes/{voteId} {
-        allow get: if isValidId(houseId) && isValidId(voteId) && resource.data.houseId == houseId;
+        allow get: if isValidId(houseId) && isValidId(voteId) && (isVerifiedUser() || resource.data.houseId == houseId);
         allow list: if resource.data.houseId == houseId;
 
         allow create: if isVerifiedUser() &&
@@ -464,7 +464,7 @@ service cloud.firestore {
 
       // Subcollection: /houses/{houseId}/comments/{commentId}
       match /comments/{commentId} {
-        allow get: if isValidId(houseId) && isValidId(commentId) && resource.data.houseId == houseId;
+        allow get: if isValidId(houseId) && isValidId(commentId) && (isVerifiedUser() || resource.data.houseId == houseId);
         allow list: if resource.data.houseId == houseId;
 
         allow create: if isVerifiedUser() &&
@@ -494,7 +494,7 @@ service cloud.firestore {
 
     // 8. Collection Rules: /ideas/{ideaId}
     match /ideas/{ideaId} {
-      allow get: if isValidId(ideaId) && isValidGroupId(resource.data.tripId);
+      allow get: if isValidId(ideaId) && (isVerifiedUser() || isValidGroupId(resource.data.tripId));
       allow list: if isValidGroupId(resource.data.tripId);
 
       allow create: if isVerifiedUser() &&
@@ -535,7 +535,7 @@ service cloud.firestore {
 
     // 9. Collection Rules: /participants/{participantId}
     match /participants/{participantId} {
-      allow get: if isValidId(participantId) && isValidGroupId(resource.data.tripId);
+      allow get: if isValidId(participantId) && (isVerifiedUser() || isValidGroupId(resource.data.tripId));
       allow list: if isValidGroupId(resource.data.tripId);
 
       allow create: if isVerifiedUser() &&

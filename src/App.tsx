@@ -1540,39 +1540,86 @@ function MainApplication() {
     if (!currentUser) return;
 
     const { house, ratingStars, reviewText, reviewerName } = payload;
-    const repoDocId = sanitizeId(`repo-${activeTripId}-${house.id}`);
+    const cleanSourceHouseId = sanitizeId(house.id || `huis-${Date.now()}`);
+    const repoDocId = sanitizeId(`repo-${activeTripId}-${cleanSourceHouseId}`);
     const repoDocRef = doc(db, 'repository_houses', repoDocId);
     const groupDocRef = doc(db, 'groups', activeTripId);
 
-    try {
-      const existingRepoSnap = await getDoc(repoDocRef);
-      const repoPayload: Record<string, any> = {
-        sourceHouseId: house.id,
-        sourceGroupId: activeTripId,
-        sourceGroupName: activeGroupRecord.name,
-        title: house.title.slice(0, 120),
-        url: house.url.slice(0, 2000),
-        photoUrl: (house.photoUrl || '').slice(0, 2000),
-        locationName: house.locationName.slice(0, 160),
-        lat: Number(house.lat) || 50.4,
-        lng: Number(house.lng) || 5.8,
-        totalPrice: Math.max(1, Math.min(50000, Math.round(house.totalPrice))),
-        bedrooms: Math.max(1, Math.min(50, Math.round(house.bedrooms))),
-        bathrooms: Math.max(1, Math.min(50, Math.round(house.bathrooms))),
-        hasBbq: Boolean(house.hasBbq),
-        hasFireplace: Boolean(house.hasFireplace),
-        hasJacuzzi: Boolean(house.hasJacuzzi),
-        hasSauna: Boolean(house.hasSauna),
-        routeUrl: (house.routeUrl || '').slice(0, 2000),
-        notes: (house.notes || '').slice(0, 1000),
-        ratingStars: Math.max(1, Math.min(5, Math.round(ratingStars))),
-        reviewText: reviewText.slice(0, 1200),
-        reviewerName: reviewerName.slice(0, 60),
-        reviewerId: currentUser.uid,
-        updatedAt: serverTimestamp(),
-      };
+    const safeTitle = (house.title || '').trim().slice(0, 120);
+    const normalizedTitle = safeTitle.length >= 2 ? safeTitle : 'Gekozen groepshuisje';
 
-      if (existingRepoSnap.exists()) {
+    const rawUrl = (house.url || '').trim();
+    const normalizedUrl = (
+      /^https?:\/\/.+/i.test(rawUrl) && rawUrl.length >= 8
+        ? rawUrl
+        : rawUrl.length >= 4
+        ? `https://${rawUrl}`
+        : 'https://supermannen.netlify.app'
+    ).slice(0, 2000);
+
+    const safeLocation = (house.locationName || '').trim().slice(0, 160);
+    const normalizedLocation = safeLocation.length >= 2 ? safeLocation : 'Ardennen / Limburg';
+
+    const safeGroupName = (activeGroupRecord.name || '').trim().slice(0, 80);
+    const normalizedGroupName = safeGroupName.length >= 2 ? safeGroupName : 'Kopgroep ’27';
+
+    const safeReview = (reviewText || '').trim().slice(0, 1200);
+    const normalizedReview =
+      safeReview.length >= 2
+        ? safeReview
+        : `Gekozen als accommodatie door ${normalizedGroupName}.`;
+
+    const safeReviewer = (reviewerName || currentUser.displayName || 'Groepslid').trim().slice(0, 60);
+    const normalizedReviewer = safeReviewer.length >= 1 ? safeReviewer : 'Groepslid';
+
+    const rawLat = Number(house.lat);
+    const normalizedLat = Number.isFinite(rawLat) && rawLat >= -90 && rawLat <= 90 ? rawLat : 50.4;
+
+    const rawLng = Number(house.lng);
+    const normalizedLng = Number.isFinite(rawLng) && rawLng >= -180 && rawLng <= 180 ? rawLng : 5.8;
+
+    const rawPrice = Math.round(Number(house.totalPrice));
+    const normalizedPrice = Number.isFinite(rawPrice) && rawPrice > 0 ? Math.min(50000, rawPrice) : 1000;
+
+    const rawBedrooms = Math.round(Number(house.bedrooms));
+    const normalizedBedrooms = Number.isFinite(rawBedrooms) && rawBedrooms >= 1 ? Math.min(50, rawBedrooms) : 4;
+
+    const rawBathrooms = Math.round(Number(house.bathrooms));
+    const normalizedBathrooms = Number.isFinite(rawBathrooms) && rawBathrooms >= 1 ? Math.min(50, rawBathrooms) : 2;
+
+    const rawStars = Math.round(Number(ratingStars));
+    const normalizedStars = Number.isFinite(rawStars) ? Math.max(1, Math.min(5, rawStars)) : 5;
+
+    const repoPayload: Record<string, any> = {
+      sourceHouseId: cleanSourceHouseId,
+      sourceGroupId: activeTripId,
+      sourceGroupName: normalizedGroupName,
+      title: normalizedTitle,
+      url: normalizedUrl,
+      photoUrl: (house.photoUrl || '').slice(0, 2000),
+      locationName: normalizedLocation,
+      lat: normalizedLat,
+      lng: normalizedLng,
+      totalPrice: normalizedPrice,
+      bedrooms: normalizedBedrooms,
+      bathrooms: normalizedBathrooms,
+      hasBbq: Boolean(house.hasBbq),
+      hasFireplace: Boolean(house.hasFireplace),
+      hasJacuzzi: Boolean(house.hasJacuzzi),
+      hasSauna: Boolean(house.hasSauna),
+      routeUrl: (house.routeUrl || '').slice(0, 2000),
+      notes: (house.notes || '').slice(0, 1000),
+      ratingStars: normalizedStars,
+      reviewText: normalizedReview,
+      reviewerName: normalizedReviewer,
+      reviewerId: currentUser.uid,
+      updatedAt: serverTimestamp(),
+    };
+
+    const repoAlreadyExists = cloudRepositoryHouses.some((r) => r.id === repoDocId);
+
+    try {
+      if (repoAlreadyExists) {
         await updateDoc(repoDocRef, repoPayload);
       } else {
         await setDoc(repoDocRef, {
@@ -1580,35 +1627,41 @@ function MainApplication() {
           createdAt: serverTimestamp(),
         });
       }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `repository_houses/${repoDocId}`);
+    }
 
-      // Also mark as chosenHouseId on the group document
-      const groupSnap = await getDoc(groupDocRef);
-      if (groupSnap.exists()) {
+    // Also mark as chosenHouseId on the group document
+    const groupAlreadyExists = cloudGroups.some((g) => g.id === activeTripId || g.tripId === activeTripId);
+    try {
+      if (groupAlreadyExists) {
         await updateDoc(groupDocRef, {
           chosenHouseId: house.id,
-          chosenHouseTitle: house.title.slice(0, 120),
+          chosenHouseTitle: normalizedTitle,
           updatedAt: serverTimestamp(),
         });
       } else {
         await setDoc(groupDocRef, {
           tripId: activeTripId,
-          name: activeGroupRecord.name,
-          periodLabel: activeGroupRecord.periodLabel,
-          regionLabel: activeGroupRecord.regionLabel,
+          name: normalizedGroupName,
+          periodLabel: (activeGroupRecord.periodLabel || 'Mei 2027').slice(0, 80),
+          regionLabel: (activeGroupRecord.regionLabel || 'Ardennen / Limburg').slice(0, 100),
+          startDate: (activeGroupRecord.startDate || '2027-05-27').slice(0, 10),
+          endDate: (activeGroupRecord.endDate || '2027-05-30').slice(0, 10),
           chosenHouseId: house.id,
-          chosenHouseTitle: house.title.slice(0, 120),
+          chosenHouseTitle: normalizedTitle,
           createdBy: currentUser.uid,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
       }
-
-      showToast(
-        `"${house.title}" is gemarkeerd als hét gekozen huisje van ${activeGroupRecord.name} en toegevoegd aan de Centrale Repository!`
-      );
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `repository_houses/${repoDocId}`);
+      handleFirestoreError(error, OperationType.WRITE, `groups/${activeTripId}`);
     }
+
+    showToast(
+      `"${normalizedTitle}" is gemarkeerd als hét gekozen huisje van ${normalizedGroupName} en toegevoegd aan de Centrale Repository!`
+    );
   };
 
   // 1-Click Import from Central Repository to active group's houses list
@@ -1715,9 +1768,9 @@ function MainApplication() {
   ) => {
     if (!currentUser) return;
     const groupRef = doc(db, 'groups', groupId);
+    const groupExists = cloudGroups.some((g) => g.id === groupId || g.tripId === groupId);
     try {
-      const snap = await getDoc(groupRef);
-      if (snap.exists()) {
+      if (groupExists) {
         await updateDoc(groupRef, {
           name: payload.name.slice(0, 80),
           startDate: payload.startDate,
@@ -1775,10 +1828,10 @@ function MainApplication() {
     const cleanAmount = Math.max(0, Math.min(50000, Number(updates.amountPaid) || 0));
 
     const userRef = doc(db, 'user_accounts', targetUser.id);
+    const existsInCloud = cloudUsers.some((u) => u.id === targetUser.id);
 
     try {
-      const snap = await getDoc(userRef);
-      if (snap.exists()) {
+      if (existsInCloud) {
         await updateDoc(userRef, {
           displayName: cleanName,
           email: cleanEmail,
@@ -1923,11 +1976,10 @@ function MainApplication() {
       return;
     }
 
+    const existsInCloud = cloudUsers.some((u) => u.id === targetUser.id);
     try {
-      const userRef = doc(db, 'user_accounts', targetUser.id);
-      const snap = await getDoc(userRef);
-      if (snap.exists()) {
-        await deleteDoc(userRef);
+      if (existsInCloud) {
+        await deleteDoc(doc(db, 'user_accounts', targetUser.id));
       }
       showToast(`${targetUser.displayName} verwijderd uit ${activeGroupRecord.name}.`);
     } catch (error) {
@@ -1946,6 +1998,7 @@ function MainApplication() {
       existingInGroup.map((u) => u.displayName.trim().toLowerCase())
     );
     const knownUids = new Set(existingInGroup.map((u) => u.uid));
+    const knownDocIds = new Set(cloudUsers.map((u) => u.id));
 
     const candidates: { name: string; uidHint?: string }[] = [];
 
@@ -1995,26 +2048,25 @@ function MainApplication() {
         0,
         120
       );
+      if (knownDocIds.has(docId)) continue;
       const placeholderEmail = `${slug || 'deelnemer'}@kopgroep27.nl`;
 
       try {
         const ref = doc(db, 'user_accounts', docId);
-        const snap = await getDoc(ref);
-        if (!snap.exists()) {
-          await setDoc(ref, {
-            uid: docId,
-            email: placeholderEmail,
-            displayName: c.name.slice(0, 60),
-            groupId: activeTripId,
-            groupIds: [activeTripId],
-            role: 'member',
-            hasPaid: false,
-            amountPaid: 0,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-          addedCount++;
-        }
+        await setDoc(ref, {
+          uid: docId,
+          email: placeholderEmail,
+          displayName: c.name.slice(0, 60),
+          groupId: activeTripId,
+          groupIds: [activeTripId],
+          role: 'member',
+          hasPaid: false,
+          amountPaid: 0,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        knownDocIds.add(docId);
+        addedCount++;
       } catch (err) {
         console.error('Error syncing participant to user_accounts:', err);
       }
@@ -2116,9 +2168,9 @@ function MainApplication() {
 
     const sentIso = new Date().toISOString();
     const groupRef = doc(db, 'groups', payload.groupId);
+    const groupExists = cloudGroups.some((g) => g.id === payload.groupId || g.tripId === payload.groupId);
     try {
-      const snap = await getDoc(groupRef);
-      if (snap.exists()) {
+      if (groupExists) {
         await updateDoc(groupRef, {
           reviewReminderSentAt: sentIso,
           updatedAt: serverTimestamp(),
