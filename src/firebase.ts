@@ -15,14 +15,34 @@ import {
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseAppletConfig from '../firebase-applet-config.json';
 
-export const firebaseConfig = firebaseAppletConfig;
+export const firebaseConfig = firebaseAppletConfig as typeof firebaseAppletConfig & {
+  firestoreDatabaseId?: string;
+};
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = firebaseConfig.firestoreDatabaseId
+  ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+  : getFirestore(app);
 export const auth = getAuth(app);
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+export const gmailProvider = new GoogleAuthProvider();
+gmailProvider.setCustomParameters({ prompt: 'consent' });
+export const SCOPES = ['https://www.googleapis.com/auth/gmail.send'];
+SCOPES.forEach((scope) => gmailProvider.addScope(scope));
+
+// In-memory OAuth access token cache (never stored in localStorage/sessionStorage)
+let cachedAccessToken: string | null = null;
+
+export function getCachedAccessToken(): string | null {
+  return cachedAccessToken;
+}
+
+export function clearCachedAccessToken(): void {
+  cachedAccessToken = null;
+}
 
 const REDIRECT_PENDING_KEY = 'kopgroep27_oauth_redirect_pending';
 
@@ -120,6 +140,105 @@ export async function signInWithGoogle(): Promise<UserCredential | null> {
 }
 
 /**
+ * Ensures a valid Google OAuth access token with gmail.send scope is available in memory.
+ * If missing or expired, opens the Google consent pop-up to obtain a fresh token.
+ */
+export async function ensureGmailAccessToken(): Promise<string> {
+  if (cachedAccessToken) {
+    return cachedAccessToken;
+  }
+  const result = await signInWithPopup(auth, gmailProvider);
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  const token = credential?.accessToken ?? null;
+  if (!token) {
+    throw new Error(
+      'Kon geen Gmail-toegangstoken ophalen. Log in met een Google-account en geef toestemming voor het verzenden van de herinneringsmail.'
+    );
+  }
+  cachedAccessToken = token;
+  return token;
+}
+
+function encodeUtf8Base64Url(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function encodeMimeHeaderUtf8(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return `=?UTF-8?B?${btoa(binary)}?=`;
+}
+
+/**
+ * Sends the post-trip review reminder email to all members of a group via the Gmail API.
+ */
+export async function sendGroupReviewReminderEmailViaGmail(params: {
+  toEmails: string[];
+  subject: string;
+  bodyText: string;
+}): Promise<void> {
+  const uniqueEmails = Array.from(
+    new Set(
+      params.toEmails
+        .map((e) => e.trim().toLowerCase())
+        .filter((e) => e.includes('@') && !e.endsWith('@kopgroep27.nl'))
+    )
+  );
+
+  if (uniqueEmails.length === 0) {
+    throw new Error('Er zijn geen geldige e-mailadressen gevonden voor de leden van deze groep.');
+  }
+
+  let token = await ensureGmailAccessToken();
+
+  const sendRequest = async (accessToken: string) => {
+    const mimeLines = [
+      `To: ${uniqueEmails.join(', ')}`,
+      `Subject: ${encodeMimeHeaderUtf8(params.subject)}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset="UTF-8"',
+      'Content-Transfer-Encoding: 8bit',
+      '',
+      params.bodyText,
+    ];
+    const raw = encodeUtf8Base64Url(mimeLines.join('\r\n'));
+
+    return fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ raw }),
+    });
+  };
+
+  let response = await sendRequest(token);
+
+  // If token expired (401), clear in-memory cache and re-authenticate once
+  if (response.status === 401) {
+    cachedAccessToken = null;
+    token = await ensureGmailAccessToken();
+    response = await sendRequest(token);
+  }
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    throw new Error(
+      `Gmail API fout (${response.status}): Kon de herinneringsmail niet versturen. ${errText}`
+    );
+  }
+}
+
+/**
  * Sign in with existing Email & Password account.
  */
 export async function signInWithEmail(
@@ -176,10 +295,15 @@ export async function checkAuthRedirectResult(): Promise<{
   }
 
   const credential = await getRedirectResult(auth);
+  if (credential) {
+    const oauthCred = GoogleAuthProvider.credentialFromResult(credential);
+    cachedAccessToken = oauthCred?.accessToken ?? null;
+  }
   return { credential, providerLabel: pendingProvider };
 }
 
 export async function logOutUser(): Promise<void> {
+  cachedAccessToken = null;
   return signOut(auth);
 }
 

@@ -12,11 +12,11 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    function isValidTripId(tripId) {
-      return tripId is string &&
-        tripId.size() >= 14 &&
-        tripId.size() <= 19 &&
-        tripId.matches('^racefiets-2027(-test)?$');
+    function isValidGroupId(groupId) {
+      return groupId is string &&
+        groupId.size() >= 3 &&
+        groupId.size() <= 64 &&
+        groupId.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function incoming() {
@@ -39,14 +39,121 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isSignedIn() &&
-        request.auth.token.email_verified == true && (
-          request.auth.token.email == 'brokelman@gmail.com' ||
-          exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      return isSignedIn() && (
+        request.auth.token.email == 'brokelman@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isGroupAdminOf(groupId) {
+      return isVerifiedUser() &&
+        exists(/databases/$(database)/documents/user_accounts/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/user_accounts/$(request.auth.uid)).data.role == 'group_admin' && (
+          get(/databases/$(database)/documents/user_accounts/$(request.auth.uid)).data.groupId == groupId ||
+          (
+            'groupIds' in get(/databases/$(database)/documents/user_accounts/$(request.auth.uid)).data &&
+            groupId in get(/databases/$(database)/documents/user_accounts/$(request.auth.uid)).data.groupIds
+          )
         );
     }
 
     // 3. Entity Validation Blueprints
+    function isValidGroup(data) {
+      return data.keys().hasAll([
+        'tripId', 'name', 'periodLabel', 'regionLabel',
+        'chosenHouseId', 'chosenHouseTitle', 'createdBy',
+        'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'tripId', 'name', 'periodLabel', 'regionLabel',
+        'chosenHouseId', 'chosenHouseTitle', 'startDate',
+        'endDate', 'reviewReminderSentAt', 'createdBy',
+        'createdAt', 'updatedAt'
+      ]) &&
+      isValidGroupId(data.tripId) &&
+      data.name is string && data.name.size() >= 2 && data.name.size() <= 80 &&
+      data.periodLabel is string && data.periodLabel.size() >= 2 && data.periodLabel.size() <= 80 &&
+      data.regionLabel is string && data.regionLabel.size() >= 2 && data.regionLabel.size() <= 100 &&
+      data.chosenHouseId is string && data.chosenHouseId.size() <= 128 &&
+      data.chosenHouseTitle is string && data.chosenHouseTitle.size() <= 120 &&
+      (!('startDate' in data) || (data.startDate is string && data.startDate.size() <= 10)) &&
+      (!('endDate' in data) || (data.endDate is string && data.endDate.size() <= 10)) &&
+      (!('reviewReminderSentAt' in data) || (data.reviewReminderSentAt is string && data.reviewReminderSentAt.size() <= 40)) &&
+      data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 && data.createdBy.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidUserAccount(data) {
+      return data.keys().hasAll([
+        'uid', 'email', 'displayName', 'groupId', 'role', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid', 'email', 'displayName', 'groupId', 'groupIds', 'role', 'hasPaid', 'amountPaid', 'createdAt', 'updatedAt'
+      ]) &&
+      data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+      data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
+      isValidGroupId(data.groupId) &&
+      (
+        !('groupIds' in data) || (
+          data.groupIds is list &&
+          data.groupIds.size() >= 1 &&
+          data.groupIds.size() <= 20 &&
+          isValidGroupId(data.groupIds[0])
+        )
+      ) &&
+      data.role is string && data.role.size() >= 6 && data.role.size() <= 11 &&
+      (data.role == 'super_admin' || data.role == 'group_admin' || data.role == 'member') &&
+      (!('hasPaid' in data) || data.hasPaid is bool) &&
+      (!('amountPaid' in data) || (data.amountPaid is number && data.amountPaid >= 0 && data.amountPaid <= 50000)) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidRepositoryHouse(data) {
+      return data.keys().hasAll([
+        'sourceHouseId', 'sourceGroupId', 'sourceGroupName',
+        'title', 'url', 'photoUrl', 'locationName',
+        'lat', 'lng', 'totalPrice', 'bedrooms', 'bathrooms',
+        'hasBbq', 'hasFireplace', 'hasJacuzzi', 'hasSauna',
+        'routeUrl', 'notes', 'ratingStars', 'reviewText',
+        'reviewerName', 'reviewerId', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'sourceHouseId', 'sourceGroupId', 'sourceGroupName',
+        'title', 'url', 'photoUrl', 'locationName',
+        'lat', 'lng', 'totalPrice', 'bedrooms', 'bathrooms',
+        'hasBbq', 'hasFireplace', 'hasJacuzzi', 'hasSauna',
+        'routeUrl', 'notes', 'ratingStars', 'reviewText',
+        'reviewerName', 'reviewerId', 'createdAt', 'updatedAt'
+      ]) &&
+      data.sourceHouseId is string && data.sourceHouseId.size() >= 1 && data.sourceHouseId.size() <= 128 && data.sourceHouseId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      isValidGroupId(data.sourceGroupId) &&
+      data.sourceGroupName is string && data.sourceGroupName.size() >= 2 && data.sourceGroupName.size() <= 80 &&
+      data.title is string && data.title.size() >= 2 && data.title.size() <= 120 &&
+      data.url is string && data.url.size() >= 8 && data.url.size() <= 2000 && data.url.matches('^https?://.+') &&
+      data.photoUrl is string && data.photoUrl.size() <= 2000 &&
+      data.locationName is string && data.locationName.size() >= 2 && data.locationName.size() <= 160 &&
+      data.lat is number && data.lat >= -90 && data.lat <= 90 &&
+      data.lng is number && data.lng >= -180 && data.lng <= 180 &&
+      data.totalPrice is number && data.totalPrice > 0 && data.totalPrice <= 50000 &&
+      data.bedrooms is number && data.bedrooms >= 1 && data.bedrooms <= 50 &&
+      data.bathrooms is number && data.bathrooms >= 1 && data.bathrooms <= 50 &&
+      data.hasBbq is bool &&
+      data.hasFireplace is bool &&
+      data.hasJacuzzi is bool &&
+      data.hasSauna is bool &&
+      data.routeUrl is string && data.routeUrl.size() <= 2000 &&
+      data.notes is string && data.notes.size() <= 1000 &&
+      data.ratingStars is number && data.ratingStars >= 1 && data.ratingStars <= 5 &&
+      data.reviewText is string && data.reviewText.size() >= 2 && data.reviewText.size() <= 1200 &&
+      data.reviewerName is string && data.reviewerName.size() >= 1 && data.reviewerName.size() <= 60 &&
+      data.reviewerId is string && data.reviewerId.size() >= 1 && data.reviewerId.size() <= 128 && data.reviewerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
     function isValidHouse(data) {
       return data.keys().hasAll([
         'tripId', 'ownerId', 'title', 'url', 'photoUrl', 'locationName',
@@ -62,7 +169,7 @@ service cloud.firestore {
         'routeUrl', 'notes', 'addedBy', 'voteScore', 'voteCount',
         'status', 'createdAt', 'updatedAt'
       ]) &&
-      isValidTripId(data.tripId) &&
+      isValidGroupId(data.tripId) &&
       data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
       data.title is string && data.title.size() >= 2 && data.title.size() <= 120 &&
       data.url is string && data.url.size() >= 8 && data.url.size() <= 2000 && data.url.matches('^https?://.+') &&
@@ -128,7 +235,7 @@ service cloud.firestore {
       data.keys().hasOnly([
         'tripId', 'authorId', 'authorName', 'category', 'text', 'likesCount', 'status', 'createdAt', 'updatedAt'
       ]) &&
-      isValidTripId(data.tripId) &&
+      isValidGroupId(data.tripId) &&
       data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
       data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
       data.category is string && data.category.size() >= 5 && data.category.size() <= 10 &&
@@ -147,7 +254,7 @@ service cloud.firestore {
       data.keys().hasOnly([
         'tripId', 'ownerId', 'name', 'isDriver', 'carSeats', 'bikeSpots', 'notes', 'createdAt', 'updatedAt'
       ]) &&
-      isValidTripId(data.tripId) &&
+      isValidGroupId(data.tripId) &&
       data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
       data.name is string && data.name.size() >= 1 && data.name.size() <= 60 &&
       data.isDriver is bool &&
@@ -158,10 +265,131 @@ service cloud.firestore {
       data.updatedAt is timestamp;
     }
 
-    // 4. Collection Rules: /houses/{houseId}
+    // 4. Collection Rules: /groups/{groupId}
+    match /groups/{groupId} {
+      allow get: if isValidGroupId(groupId) && isValidGroupId(resource.data.tripId);
+      allow list: if resource.data.tripId is string;
+
+      allow create: if isVerifiedUser() &&
+        isValidGroupId(groupId) &&
+        isValidGroup(incoming()) &&
+        incoming().tripId == groupId &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isAdmin() || groupId == 'racefiets-2027' || groupId == 'racefiets-2027-test'
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidGroupId(groupId) &&
+        isValidGroup(incoming()) &&
+        incoming().tripId == existing().tripId &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          isGroupAdminOf(groupId) ||
+          // Any verified group member can register the group's chosen house or mark the review reminder as sent
+          incoming().diff(existing()).affectedKeys().hasOnly(['chosenHouseId', 'chosenHouseTitle', 'reviewReminderSentAt', 'updatedAt'])
+        );
+
+      allow delete: if isAdmin() && isValidGroupId(groupId);
+    }
+
+    // 5. Collection Rules: /user_accounts/{userId}
+    match /user_accounts/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && (
+        request.auth.uid == userId ||
+        isAdmin() ||
+        isValidGroupId(resource.data.groupId)
+      );
+      allow list: if isVerifiedUser() && (
+        isAdmin() ||
+        isValidGroupId(resource.data.groupId)
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserAccount(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isGroupAdminOf(incoming().groupId) &&
+            incoming().role == 'member'
+          ) ||
+          (
+            userId == request.auth.uid &&
+            incoming().role == 'member'
+          )
+        );
+
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserAccount(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isGroupAdminOf(existing().groupId) &&
+            incoming().groupId == existing().groupId &&
+            existing().role != 'super_admin' &&
+            incoming().role != 'super_admin' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'role', 'groupIds', 'hasPaid', 'amountPaid', 'updatedAt'])
+          ) ||
+          (
+            request.auth.uid == userId &&
+            incoming().role == existing().role &&
+            incoming().groupId == existing().groupId &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'groupIds', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isVerifiedUser() &&
+        isValidId(userId) && (
+          isAdmin() ||
+          (isGroupAdminOf(existing().groupId) && existing().role == 'member')
+        );
+    }
+
+    // 6. Collection Rules: /repository_houses/{repoHouseId}
+    match /repository_houses/{repoHouseId} {
+      allow get: if isValidId(repoHouseId) && resource.data.ratingStars >= 1 && resource.data.ratingStars <= 5;
+      allow list: if resource.data.ratingStars >= 1 && resource.data.ratingStars <= 5;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(repoHouseId) &&
+        isValidRepositoryHouse(incoming()) &&
+        incoming().reviewerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(repoHouseId) &&
+        isValidRepositoryHouse(incoming()) &&
+        incoming().sourceGroupId == existing().sourceGroupId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          isGroupAdminOf(existing().sourceGroupId) ||
+          existing().reviewerId == request.auth.uid ||
+          incoming().reviewerId == request.auth.uid
+        );
+
+      allow delete: if isVerifiedUser() &&
+        isValidId(repoHouseId) && (
+          isAdmin() ||
+          isGroupAdminOf(existing().sourceGroupId) ||
+          existing().reviewerId == request.auth.uid
+        );
+    }
+
+    // 7. Collection Rules: /houses/{houseId}
     match /houses/{houseId} {
-      allow get: if isValidId(houseId) && isValidTripId(resource.data.tripId);
-      allow list: if isValidTripId(resource.data.tripId);
+      allow get: if isValidId(houseId) && isValidGroupId(resource.data.tripId);
+      allow list: if isValidGroupId(resource.data.tripId);
 
       allow create: if isVerifiedUser() &&
         isValidId(houseId) &&
@@ -179,6 +407,7 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
+          isGroupAdminOf(existing().tripId) ||
           // Action 1: Owner edits house details while active
           (
             existing().status == 'active' &&
@@ -200,7 +429,7 @@ service cloud.firestore {
 
       allow delete: if isVerifiedUser() &&
         isValidId(houseId) &&
-        (existing().ownerId == request.auth.uid || isAdmin());
+        (existing().ownerId == request.auth.uid || isAdmin() || isGroupAdminOf(existing().tripId));
 
       // Subcollection: /houses/{houseId}/votes/{voteId}
       match /votes/{voteId} {
@@ -263,10 +492,10 @@ service cloud.firestore {
       }
     }
 
-    // 5. Collection Rules: /ideas/{ideaId}
+    // 8. Collection Rules: /ideas/{ideaId}
     match /ideas/{ideaId} {
-      allow get: if isValidId(ideaId) && isValidTripId(resource.data.tripId);
-      allow list: if isValidTripId(resource.data.tripId);
+      allow get: if isValidId(ideaId) && isValidGroupId(resource.data.tripId);
+      allow list: if isValidGroupId(resource.data.tripId);
 
       allow create: if isVerifiedUser() &&
         isValidId(ideaId) &&
@@ -284,6 +513,7 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
+          isGroupAdminOf(existing().tripId) ||
           // Action 1: Verified author edits text, category, or status while open
           (
             existing().status == 'open' &&
@@ -300,13 +530,13 @@ service cloud.firestore {
 
       allow delete: if isVerifiedUser() &&
         isValidId(ideaId) &&
-        (existing().authorId == request.auth.uid || isAdmin());
+        (existing().authorId == request.auth.uid || isAdmin() || isGroupAdminOf(existing().tripId));
     }
 
-    // 6. Collection Rules: /participants/{participantId}
+    // 9. Collection Rules: /participants/{participantId}
     match /participants/{participantId} {
-      allow get: if isValidId(participantId) && isValidTripId(resource.data.tripId);
-      allow list: if isValidTripId(resource.data.tripId);
+      allow get: if isValidId(participantId) && isValidGroupId(resource.data.tripId);
+      allow list: if isValidGroupId(resource.data.tripId);
 
       allow create: if isVerifiedUser() &&
         isValidId(participantId) &&
@@ -323,6 +553,7 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
+          isGroupAdminOf(existing().tripId) ||
           (
             incoming().diff(existing()).affectedKeys().hasOnly([
               'name', 'isDriver', 'carSeats', 'bikeSpots', 'notes', 'updatedAt'
@@ -332,7 +563,7 @@ service cloud.firestore {
 
       allow delete: if isVerifiedUser() &&
         isValidId(participantId) &&
-        (existing().ownerId == request.auth.uid || isAdmin());
+        (existing().ownerId == request.auth.uid || isAdmin() || isGroupAdminOf(existing().tripId));
     }
   }
 }

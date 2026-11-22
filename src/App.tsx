@@ -42,12 +42,18 @@ import {
   AlertCircle,
   Eye,
   UploadCloud,
+  ShieldCheck,
+  Building2,
+  BellRing,
+  Mail,
 } from 'lucide-react';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
+  getDocs,
   onSnapshot,
   query,
   serverTimestamp,
@@ -58,27 +64,41 @@ import {
 } from 'firebase/firestore';
 import {
   auth,
+  clearCachedAccessToken,
   db,
   handleFirestoreError,
   logOutUser,
   OperationType,
   sanitizeId,
+  sendGroupReviewReminderEmailViaGmail,
   VALIDATION_CONSTRAINTS,
 } from './firebase';
 import {
   FacilityFilter,
   GeneralIdeaRecord,
+  GroupRecord,
   HouseCommentRecord,
   HouseRecord,
   HouseVoteRecord,
   ParticipantRecord,
+  RepositoryHouseRecord,
   SortOption,
+  UserAccountRecord,
+  UserRole,
   VoteFilter,
 } from './types';
 import { INITIAL_HOUSES } from './data/initialData';
 import { HouseIllustration } from './components/HouseIllustration';
 import { LeafletMap } from './components/LeafletMap';
 import { AddHouseModal, HouseFormData } from './components/AddHouseModal';
+import { ChosenHouseReviewModal } from './components/ChosenHouseReviewModal';
+import { ReviewReminderEmailModal } from './components/ReviewReminderEmailModal';
+import { RepositoryView } from './components/RepositoryView';
+import {
+  getUserGroupIds,
+  userBelongsToGroup,
+  UserGroupAdminView,
+} from './components/UserGroupAdminView';
 import { LoginPage } from './components/LoginPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import {
@@ -90,6 +110,7 @@ import {
   parseCarSeatsInput,
   resolveTripId,
 } from './utils/validation';
+import { isReviewReminderDueNow } from './utils/dateUtils';
 
 const LEGACY_STORAGE_KEY_HOUSES = 'kopgroep27_houses_v2';
 const STORAGE_KEY_CYCLISTS = 'kopgroep27_cyclists_v1';
@@ -126,10 +147,17 @@ function MainApplication() {
     return resolveTripId(window.location.search) === 'racefiets-2027-test';
   });
 
-  const activeTripId = useMemo(
-    () => resolveTripId(typeof window !== 'undefined' ? window.location.search : '', isTestEnvironment),
-    [isTestEnvironment]
-  );
+  // Multi-group state & User Hierarchy state
+  const [selectedGroupId, setSelectedGroupId] = useState<string>('racefiets-2027');
+  const [currentUserAccount, setCurrentUserAccount] = useState<UserAccountRecord | null>(null);
+  const [cloudGroups, setCloudGroups] = useState<GroupRecord[]>([]);
+  const [cloudUsers, setCloudUsers] = useState<UserAccountRecord[]>([]);
+  const [cloudRepositoryHouses, setCloudRepositoryHouses] = useState<RepositoryHouseRecord[]>([]);
+
+  const activeTripId = useMemo(() => {
+    if (isTestEnvironment) return 'racefiets-2027-test';
+    return selectedGroupId || 'racefiets-2027';
+  }, [isTestEnvironment, selectedGroupId]);
 
   // Verified Firebase Auth state + Explicit Read-Only Guest state
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
@@ -165,7 +193,9 @@ function MainApplication() {
 
   // Navigation & UI state
   // IMPORTANT FOR MOBILE: Default mobilePane to 'lijst' so the houses list is immediately visible on phones!
-  const [activeView, setActiveView] = useState<'vergelijken' | 'beheren' | 'deelnemers' | 'ideeen'>('vergelijken');
+  const [activeView, setActiveView] = useState<
+    'vergelijken' | 'beheren' | 'deelnemers' | 'ideeen' | 'repository' | 'administratie'
+  >('vergelijken');
   const [listDisplayMode, setListDisplayMode] = useState<'kaarten' | 'tabel'>('kaarten');
   const [mobilePane, setMobilePane] = useState<'lijst' | 'kaart' | 'beide'>('lijst');
   const [selectedHouseId, setSelectedHouseId] = useState<string | null>(null);
@@ -193,6 +223,8 @@ function MainApplication() {
   // Modals & Toasts
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingHouse, setEditingHouse] = useState<HouseRecord | null>(null);
+  const [reviewingHouse, setReviewingHouse] = useState<HouseRecord | null>(null);
+  const [reminderTargetGroup, setReminderTargetGroup] = useState<GroupRecord | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isMigratingLocal, setIsMigratingLocal] = useState(false);
 
@@ -236,6 +268,8 @@ function MainApplication() {
           }
           return prev;
         });
+      } else {
+        clearCachedAccessToken();
       }
     });
     return () => unsub();
@@ -248,17 +282,375 @@ function MainApplication() {
       (currentUser.emailVerified ||
         currentUser.providerData.some((p) => p.providerId === 'password'))
   );
-  const isAdminUser = Boolean(
+  const isSuperAdmin = Boolean(
     currentUser &&
-      currentUser.emailVerified &&
-      currentUser.email?.toLowerCase() === 'brokelman@gmail.com'
+      isVerifiedMember &&
+      (currentUser.email?.toLowerCase() === 'brokelman@gmail.com' ||
+        currentUserAccount?.role === 'super_admin')
   );
+  const isGroupAdmin = Boolean(
+    isVerifiedMember &&
+      currentUserAccount &&
+      currentUserAccount.role === 'group_admin' &&
+      userBelongsToGroup(currentUserAccount, activeTripId)
+  );
+  const isAdminUser = isSuperAdmin || isGroupAdmin;
+  const canAccessAdminView = isSuperAdmin || Boolean(currentUserAccount?.role === 'group_admin');
   const canViewApp = Boolean(currentUser || isGuestReadOnly);
 
   const canModifyRecord = (ownerOrAuthorId: string): boolean => {
     if (!isVerifiedMember || !currentUser) return false;
     return currentUser.uid === ownerOrAuthorId || isAdminUser;
   };
+
+  // Bootstrap default group 'racefiets-2027' + current user's /user_accounts/{uid} document on login
+  useEffect(() => {
+    if (!isAuthReady || !currentUser || !isVerifiedMember) {
+      setCurrentUserAccount(null);
+      return;
+    }
+
+    let isCancelled = false;
+    const emailLower = (currentUser.email || '').toLowerCase();
+    const isBrokelman = emailLower === 'brokelman@gmail.com';
+    const defaultName = (
+      friendName.trim() ||
+      currentUser.displayName?.split(' ')[0] ||
+      emailLower.split('@')[0] ||
+      'Groepslid'
+    ).slice(0, VALIDATION_CONSTRAINTS.NAME_MAX);
+
+    const ensureUserAndDefaultGroup = async () => {
+      try {
+        // 1. Ensure default group 'racefiets-2027' exists so Kopgroep '27 data is always registered
+        const defaultGroupRef = doc(db, 'groups', 'racefiets-2027');
+        const defaultGroupSnap = await getDoc(defaultGroupRef);
+        if (!defaultGroupSnap.exists()) {
+          await setDoc(defaultGroupRef, {
+            tripId: 'racefiets-2027',
+            name: 'Kopgroep ’27',
+            periodLabel: 'Do 27 mei t/m zo 30 mei 2027 (3 nachten)',
+            startDate: '2027-05-27',
+            endDate: '2027-05-30',
+            regionLabel: 'Ardennen / Zuid-Limburg / Eifel',
+            chosenHouseId: '',
+            chosenHouseTitle: '',
+            createdBy: currentUser.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+
+        // 2. Check if user already has a /user_accounts/{uid} document
+        const userRef = doc(db, 'user_accounts', currentUser.uid);
+        const userSnap = await getDoc(userRef);
+
+        if (userSnap.exists()) {
+          const data = userSnap.data();
+          if (isBrokelman && data.role !== 'super_admin') {
+            await updateDoc(userRef, {
+              role: 'super_admin',
+              updatedAt: serverTimestamp(),
+            });
+          }
+          if (!isCancelled) {
+            const primaryGroup = data.groupId || 'racefiets-2027';
+            const rawGroupIds = Array.isArray(data.groupIds)
+              ? data.groupIds.filter(Boolean)
+              : [];
+            const assignedGroups = Array.from(new Set([primaryGroup, ...rawGroupIds]));
+            setSelectedGroupId((prev) =>
+              isBrokelman || assignedGroups.includes(prev) ? prev : primaryGroup
+            );
+          }
+        } else {
+          // Check if an admin pre-registered this user by email
+          let initialGroupId = 'racefiets-2027';
+          let initialGroupIds: string[] = ['racefiets-2027'];
+          let initialRole: UserRole = isBrokelman ? 'super_admin' : 'member';
+          let initialName = defaultName;
+
+          try {
+            const preRegSnap = await getDocs(
+              query(
+                collection(db, 'user_accounts'),
+                where('groupId', '==', 'racefiets-2027')
+              )
+            );
+            const matchedDocs = preRegSnap.docs.filter(
+              (d) =>
+                (d.data().email || '').toLowerCase() === emailLower &&
+                d.id.startsWith('invite-')
+            );
+            if (matchedDocs.length > 0) {
+              const md = matchedDocs[0].data();
+              initialGroupId = md.groupId || 'racefiets-2027';
+              const mergedGroups = new Set<string>([initialGroupId]);
+              matchedDocs.forEach((docItem) => {
+                const itemData = docItem.data();
+                if (itemData.groupId) mergedGroups.add(itemData.groupId);
+                if (Array.isArray(itemData.groupIds)) {
+                  itemData.groupIds.forEach((gid: string) => {
+                    if (gid) mergedGroups.add(gid);
+                  });
+                }
+              });
+              initialGroupIds = Array.from(mergedGroups);
+              initialRole = isBrokelman ? 'super_admin' : (md.role as UserRole) || 'member';
+              initialName = md.displayName || defaultName;
+            }
+          } catch {
+            // Ignore pre-registration lookup errors
+          }
+
+          await setDoc(userRef, {
+            uid: currentUser.uid,
+            email: emailLower || 'onbekend@kopgroep27.nl',
+            displayName: initialName,
+            groupId: initialGroupId,
+            groupIds: initialGroupIds,
+            role: initialRole,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+
+          if (!isCancelled) {
+            setSelectedGroupId(initialGroupId);
+          }
+        }
+      } catch (err) {
+        console.error('Error bootstrapping user account / default group:', err);
+      }
+    };
+
+    ensureUserAndDefaultGroup();
+
+    // Real-time listener on current user's own account record
+    const unsubSelf = onSnapshot(
+      doc(db, 'user_accounts', currentUser.uid),
+      (snap) => {
+        if (!snap.exists()) return;
+        const d = snap.data();
+        const role: UserRole =
+          emailLower === 'brokelman@gmail.com'
+            ? 'super_admin'
+            : (d.role as UserRole) || 'member';
+        const primaryGroup = d.groupId || 'racefiets-2027';
+        const rawGroupIds = Array.isArray(d.groupIds) ? d.groupIds.filter(Boolean) : [];
+        const normalizedGroupIds = Array.from(new Set([primaryGroup, ...rawGroupIds]));
+
+        const acc: UserAccountRecord = {
+          id: snap.id,
+          uid: d.uid || snap.id,
+          email: d.email || emailLower,
+          displayName: d.displayName || defaultName,
+          groupId: primaryGroup,
+          groupIds: normalizedGroupIds,
+          role,
+          hasPaid: Boolean(d.hasPaid),
+          amountPaid:
+            typeof d.amountPaid === 'number' ? d.amountPaid : Number(d.amountPaid) || 0,
+          createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : new Date().toISOString(),
+          updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : new Date().toISOString(),
+        };
+        setCurrentUserAccount(acc);
+        // Ensure non-super_admin users only view a group that is in their allowed groupIds list!
+        if (role !== 'super_admin') {
+          setSelectedGroupId((prev) =>
+            normalizedGroupIds.includes(prev) ? prev : acc.groupId
+          );
+        }
+      },
+      (err) => {
+        console.error('Error listening to user_accounts self doc:', err);
+      }
+    );
+
+    return () => {
+      isCancelled = true;
+      unsubSelf();
+    };
+  }, [isAuthReady, currentUser, isVerifiedMember]);
+
+  // Listen to /groups and /repository_houses and scoped /user_accounts
+  useEffect(() => {
+    if (!isAuthReady || !canViewApp) {
+      setCloudGroups([]);
+      setCloudRepositoryHouses([]);
+      setCloudUsers([]);
+      return;
+    }
+
+    const unsubGroups = onSnapshot(
+      collection(db, 'groups'),
+      (snap) => {
+        const list: GroupRecord[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          const tripId = d.tripId || docSnap.id;
+          const isDefaultGroup = tripId === 'racefiets-2027';
+          return {
+            id: docSnap.id,
+            tripId,
+            name: d.name || 'Kopgroep ’27',
+            periodLabel: d.periodLabel || 'Do 27 mei t/m zo 30 mei 2027 (3 nachten)',
+            startDate: d.startDate || (isDefaultGroup ? '2027-05-27' : ''),
+            endDate: d.endDate || (isDefaultGroup ? '2027-05-30' : ''),
+            reviewReminderSentAt: d.reviewReminderSentAt || '',
+            regionLabel: d.regionLabel || 'Ardennen / Zuid-Limburg / Eifel',
+            chosenHouseId: d.chosenHouseId || '',
+            chosenHouseTitle: d.chosenHouseTitle || '',
+            createdBy: d.createdBy || '',
+            createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : new Date().toISOString(),
+            updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : new Date().toISOString(),
+          };
+        });
+        setCloudGroups(list);
+      },
+      (err) => {
+        console.error('Error loading groups:', err);
+      }
+    );
+
+    const unsubRepo = onSnapshot(
+      query(collection(db, 'repository_houses'), where('ratingStars', 'in', [1, 2, 3, 4, 5])),
+      (snap) => {
+        const list: RepositoryHouseRecord[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            sourceHouseId: d.sourceHouseId || docSnap.id,
+            sourceGroupId: d.sourceGroupId || 'racefiets-2027',
+            sourceGroupName: d.sourceGroupName || 'Kopgroep ’27',
+            title: d.title || '',
+            url: d.url || '',
+            photoUrl: d.photoUrl || '',
+            locationName: d.locationName || '',
+            lat: typeof d.lat === 'number' ? d.lat : Number(d.lat) || 50.4,
+            lng: typeof d.lng === 'number' ? d.lng : Number(d.lng) || 5.8,
+            totalPrice: typeof d.totalPrice === 'number' ? d.totalPrice : Number(d.totalPrice) || 1000,
+            bedrooms: typeof d.bedrooms === 'number' ? d.bedrooms : Number(d.bedrooms) || 4,
+            bathrooms: typeof d.bathrooms === 'number' ? d.bathrooms : Number(d.bathrooms) || 2,
+            hasBbq: Boolean(d.hasBbq),
+            hasFireplace: Boolean(d.hasFireplace),
+            hasJacuzzi: Boolean(d.hasJacuzzi),
+            hasSauna: Boolean(d.hasSauna),
+            routeUrl: d.routeUrl || '',
+            notes: d.notes || '',
+            ratingStars: typeof d.ratingStars === 'number' ? d.ratingStars : Number(d.ratingStars) || 5,
+            reviewText: d.reviewText || '',
+            reviewerName: d.reviewerName || 'Groepslid',
+            reviewerId: d.reviewerId || '',
+            createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : new Date().toISOString(),
+            updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : new Date().toISOString(),
+          };
+        });
+        setCloudRepositoryHouses(list);
+      },
+      (err) => {
+        console.error('Error loading repository_houses:', err);
+      }
+    );
+
+    let unsubUsers: (() => void) | null = null;
+    if (isVerifiedMember && currentUser) {
+      // Super Admin loads all users across all groups; Group Admin or Member queries users in their active group
+      const usersQuery = isSuperAdmin
+        ? collection(db, 'user_accounts')
+        : query(collection(db, 'user_accounts'), where('groupId', '==', activeTripId));
+
+      unsubUsers = onSnapshot(
+        usersQuery,
+        (snap) => {
+          const list: UserAccountRecord[] = snap.docs.map((docSnap) => {
+            const d = docSnap.data();
+            const primaryGroup = d.groupId || 'racefiets-2027';
+            const rawGroupIds = Array.isArray(d.groupIds) ? d.groupIds.filter(Boolean) : [];
+            const groupIds = Array.from(new Set([primaryGroup, ...rawGroupIds]));
+            return {
+              id: docSnap.id,
+              uid: d.uid || docSnap.id,
+              email: d.email || '',
+              displayName: d.displayName || 'Groepslid',
+              groupId: primaryGroup,
+              groupIds,
+              role: (d.role as UserRole) || 'member',
+              hasPaid: Boolean(d.hasPaid),
+              amountPaid:
+                typeof d.amountPaid === 'number'
+                  ? d.amountPaid
+                  : Number(d.amountPaid) || 0,
+              createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : new Date().toISOString(),
+              updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : new Date().toISOString(),
+            };
+          });
+          setCloudUsers(list);
+        },
+        (err) => {
+          console.error('Error loading user_accounts:', err);
+        }
+      );
+    }
+
+    return () => {
+      unsubGroups();
+      unsubRepo();
+      if (unsubUsers) unsubUsers();
+    };
+  }, [isAuthReady, canViewApp, isVerifiedMember, currentUser, isSuperAdmin, activeTripId]);
+
+  // Active Group Record (with safe fallback for 'racefiets-2027')
+  const activeGroupRecord: GroupRecord = useMemo(() => {
+    const found = cloudGroups.find((g) => g.tripId === activeTripId);
+    if (found) return found;
+    return {
+      id: activeTripId,
+      tripId: activeTripId,
+      name: activeTripId === 'racefiets-2027' ? 'Kopgroep ’27' : activeTripId,
+      periodLabel: 'Do 27 mei t/m zo 30 mei 2027 (3 nachten)',
+      startDate: '2027-05-27',
+      endDate: '2027-05-30',
+      reviewReminderSentAt: '',
+      regionLabel: 'Ardennen / Zuid-Limburg / Eifel',
+      chosenHouseId: '',
+      chosenHouseTitle: '',
+      createdBy: currentUser?.uid || 'system',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+  }, [cloudGroups, activeTripId, currentUser]);
+
+  const allGroupsWithDefault: GroupRecord[] = useMemo(() => {
+    const hasDefault = cloudGroups.some((g) => g.tripId === 'racefiets-2027');
+    if (hasDefault) return cloudGroups;
+    return [
+      {
+        id: 'racefiets-2027',
+        tripId: 'racefiets-2027',
+        name: 'Kopgroep ’27',
+        periodLabel: 'Do 27 mei t/m zo 30 mei 2027 (3 nachten)',
+        startDate: '2027-05-27',
+        endDate: '2027-05-30',
+        reviewReminderSentAt: '',
+        regionLabel: 'Ardennen / Zuid-Limburg / Eifel',
+        chosenHouseId: '',
+        chosenHouseTitle: '',
+        createdBy: currentUser?.uid || 'system',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      ...cloudGroups,
+    ];
+  }, [cloudGroups, currentUser]);
+
+  // Groups that the currently logged-in user belongs to (Super User has access to all groups; multi-group users have access to all their assigned groupIds)
+  const userAccessibleGroups: GroupRecord[] = useMemo(() => {
+    if (isSuperAdmin) return allGroupsWithDefault;
+    const allowedIds = currentUserAccount
+      ? getUserGroupIds(currentUserAccount)
+      : ['racefiets-2027'];
+    const filtered = allGroupsWithDefault.filter((g) => allowedIds.includes(g.tripId));
+    return filtered.length > 0 ? filtered : [activeGroupRecord];
+  }, [isSuperAdmin, allGroupsWithDefault, currentUserAccount, activeGroupRecord]);
 
   const handleEnterGuestReadOnly = () => {
     setIsGuestReadOnly(true);
@@ -1137,6 +1529,610 @@ function MainApplication() {
     }
   };
 
+  // GROUP & REPOSITORY HANDLERS
+  const handleSaveChosenAndReview = async (payload: {
+    house: HouseRecord;
+    ratingStars: number;
+    reviewText: string;
+    reviewerName: string;
+  }) => {
+    if (!requireVerifiedLogin('het gekozen huisje en de review op te slaan')) return;
+    if (!currentUser) return;
+
+    const { house, ratingStars, reviewText, reviewerName } = payload;
+    const repoDocId = sanitizeId(`repo-${activeTripId}-${house.id}`);
+    const repoDocRef = doc(db, 'repository_houses', repoDocId);
+    const groupDocRef = doc(db, 'groups', activeTripId);
+
+    try {
+      const existingRepoSnap = await getDoc(repoDocRef);
+      const repoPayload: Record<string, any> = {
+        sourceHouseId: house.id,
+        sourceGroupId: activeTripId,
+        sourceGroupName: activeGroupRecord.name,
+        title: house.title.slice(0, 120),
+        url: house.url.slice(0, 2000),
+        photoUrl: (house.photoUrl || '').slice(0, 2000),
+        locationName: house.locationName.slice(0, 160),
+        lat: Number(house.lat) || 50.4,
+        lng: Number(house.lng) || 5.8,
+        totalPrice: Math.max(1, Math.min(50000, Math.round(house.totalPrice))),
+        bedrooms: Math.max(1, Math.min(50, Math.round(house.bedrooms))),
+        bathrooms: Math.max(1, Math.min(50, Math.round(house.bathrooms))),
+        hasBbq: Boolean(house.hasBbq),
+        hasFireplace: Boolean(house.hasFireplace),
+        hasJacuzzi: Boolean(house.hasJacuzzi),
+        hasSauna: Boolean(house.hasSauna),
+        routeUrl: (house.routeUrl || '').slice(0, 2000),
+        notes: (house.notes || '').slice(0, 1000),
+        ratingStars: Math.max(1, Math.min(5, Math.round(ratingStars))),
+        reviewText: reviewText.slice(0, 1200),
+        reviewerName: reviewerName.slice(0, 60),
+        reviewerId: currentUser.uid,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (existingRepoSnap.exists()) {
+        await updateDoc(repoDocRef, repoPayload);
+      } else {
+        await setDoc(repoDocRef, {
+          ...repoPayload,
+          createdAt: serverTimestamp(),
+        });
+      }
+
+      // Also mark as chosenHouseId on the group document
+      const groupSnap = await getDoc(groupDocRef);
+      if (groupSnap.exists()) {
+        await updateDoc(groupDocRef, {
+          chosenHouseId: house.id,
+          chosenHouseTitle: house.title.slice(0, 120),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(groupDocRef, {
+          tripId: activeTripId,
+          name: activeGroupRecord.name,
+          periodLabel: activeGroupRecord.periodLabel,
+          regionLabel: activeGroupRecord.regionLabel,
+          chosenHouseId: house.id,
+          chosenHouseTitle: house.title.slice(0, 120),
+          createdBy: currentUser.uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      showToast(
+        `"${house.title}" is gemarkeerd als hét gekozen huisje van ${activeGroupRecord.name} en toegevoegd aan de Centrale Repository!`
+      );
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `repository_houses/${repoDocId}`);
+    }
+  };
+
+  // 1-Click Import from Central Repository to active group's houses list
+  const handleAddRepoHouseToGroup = async (repoHouse: RepositoryHouseRecord) => {
+    if (!requireVerifiedLogin('een huisje uit de repository toe te voegen aan jullie groep')) return;
+    if (!currentUser) return;
+
+    const newId = sanitizeId(`huis-${Date.now()}`);
+    const houseDocRef = doc(db, 'houses', newId);
+    const voteDocRef = doc(db, 'houses', newId, 'votes', currentUser.uid);
+    const addedByName = (friendName.trim() || currentUser.displayName || 'Groepslid').slice(
+      0,
+      VALIDATION_CONSTRAINTS.NAME_MAX
+    );
+
+    try {
+      const batch = writeBatch(db);
+      batch.set(houseDocRef, {
+        tripId: activeTripId,
+        ownerId: currentUser.uid,
+        title: repoHouse.title.slice(0, 120),
+        url: repoHouse.url.slice(0, 2000),
+        photoUrl: (repoHouse.photoUrl || '').slice(0, 2000),
+        locationName: repoHouse.locationName.slice(0, 160),
+        lat: Number(repoHouse.lat) || 50.4,
+        lng: Number(repoHouse.lng) || 5.8,
+        totalPrice: Math.max(1, Math.min(50000, Math.round(repoHouse.totalPrice))),
+        bedrooms: Math.max(1, Math.min(50, Math.round(repoHouse.bedrooms))),
+        bathrooms: Math.max(1, Math.min(50, Math.round(repoHouse.bathrooms))),
+        hasBbq: Boolean(repoHouse.hasBbq),
+        hasFireplace: Boolean(repoHouse.hasFireplace),
+        hasJacuzzi: Boolean(repoHouse.hasJacuzzi),
+        hasSauna: Boolean(repoHouse.hasSauna),
+        routeUrl: (repoHouse.routeUrl || '').slice(0, 2000),
+        notes: (
+          repoHouse.notes
+            ? `${repoHouse.notes} (Aanrader van ${repoHouse.sourceGroupName}: ${repoHouse.ratingStars}★)`
+            : `Overgenomen uit Centrale Repository — gekozen door ${repoHouse.sourceGroupName} (${repoHouse.ratingStars}★: "${repoHouse.reviewText}")`
+        ).slice(0, 1000),
+        addedBy: addedByName,
+        voteScore: 5,
+        voteCount: 1,
+        status: 'active',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      batch.set(voteDocRef, {
+        houseId: newId,
+        userId: currentUser.uid,
+        voterName: addedByName,
+        value: 5,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      await batch.commit();
+      showToast(`"${repoHouse.title}" is met 1 klik toegevoegd aan de lijst van ${activeGroupRecord.name}!`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `houses/${newId}`);
+    }
+  };
+
+  // Super Admin: Create a new user group with start/end date (date or date range)
+  const handleCreateGroup = async (payload: {
+    tripId: string;
+    name: string;
+    startDate: string;
+    endDate: string;
+    periodLabel: string;
+    regionLabel: string;
+  }) => {
+    if (!isSuperAdmin || !currentUser) return;
+    const cleanTripId = sanitizeId(payload.tripId);
+    try {
+      await setDoc(doc(db, 'groups', cleanTripId), {
+        tripId: cleanTripId,
+        name: payload.name.slice(0, 80),
+        startDate: payload.startDate,
+        endDate: payload.endDate || payload.startDate,
+        periodLabel: payload.periodLabel.slice(0, 80),
+        regionLabel: payload.regionLabel.slice(0, 100),
+        chosenHouseId: '',
+        chosenHouseTitle: '',
+        createdBy: currentUser.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      setSelectedGroupId(cleanTripId);
+      showToast(`Nieuwe groep "${payload.name}" (${payload.periodLabel}) is aangemaakt!`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `groups/${cleanTripId}`);
+    }
+  };
+
+  // Super Admin or Group Admin: Update group name, start/end date range, period, or region
+  const handleUpdateGroupDetails = async (
+    groupId: string,
+    payload: {
+      name: string;
+      startDate: string;
+      endDate: string;
+      periodLabel: string;
+      regionLabel: string;
+    }
+  ) => {
+    if (!currentUser) return;
+    const groupRef = doc(db, 'groups', groupId);
+    try {
+      const snap = await getDoc(groupRef);
+      if (snap.exists()) {
+        await updateDoc(groupRef, {
+          name: payload.name.slice(0, 80),
+          startDate: payload.startDate,
+          endDate: payload.endDate || payload.startDate,
+          periodLabel: payload.periodLabel.slice(0, 80),
+          regionLabel: payload.regionLabel.slice(0, 100),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(groupRef, {
+          tripId: groupId,
+          name: payload.name.slice(0, 80),
+          startDate: payload.startDate,
+          endDate: payload.endDate || payload.startDate,
+          periodLabel: payload.periodLabel.slice(0, 80),
+          regionLabel: payload.regionLabel.slice(0, 100),
+          chosenHouseId: '',
+          chosenHouseTitle: '',
+          createdBy: currentUser.uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+      showToast(`Groepsgegevens & vakantiedatum van "${payload.name}" zijn bijgewerkt!`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `groups/${groupId}`);
+    }
+  };
+
+  // Super Admin or Group Admin: Update user account (name, email, role, groups, payment status & amount)
+  const handleUpdateUserAccount = async (
+    targetUser: UserAccountRecord,
+    updates: {
+      displayName: string;
+      email: string;
+      role: UserRole;
+      primaryGroupId: string;
+      groupIds: string[];
+      hasPaid: boolean;
+      amountPaid: number;
+    }
+  ) => {
+    if (!currentUser) return;
+    const normalizedGroupIds = Array.from(
+      new Set([
+        updates.primaryGroupId,
+        ...(Array.isArray(updates.groupIds) && updates.groupIds.length > 0
+          ? updates.groupIds
+          : getUserGroupIds(targetUser)),
+      ])
+    ).slice(0, 20);
+
+    const cleanName = updates.displayName.trim().slice(0, 60) || targetUser.displayName;
+    const cleanEmail = updates.email.trim().toLowerCase().slice(0, 160) || targetUser.email;
+    const cleanAmount = Math.max(0, Math.min(50000, Number(updates.amountPaid) || 0));
+
+    const userRef = doc(db, 'user_accounts', targetUser.id);
+
+    try {
+      const snap = await getDoc(userRef);
+      if (snap.exists()) {
+        await updateDoc(userRef, {
+          displayName: cleanName,
+          email: cleanEmail,
+          role: updates.role,
+          groupId: updates.primaryGroupId,
+          groupIds: normalizedGroupIds,
+          hasPaid: Boolean(updates.hasPaid),
+          amountPaid: cleanAmount,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(userRef, {
+          uid: targetUser.id,
+          displayName: cleanName,
+          email: cleanEmail,
+          role: updates.role,
+          groupId: updates.primaryGroupId,
+          groupIds: normalizedGroupIds,
+          hasPaid: Boolean(updates.hasPaid),
+          amountPaid: cleanAmount,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+      showToast(`Gegevens van ${cleanName} zijn opgeslagen!`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `user_accounts/${targetUser.id}`);
+    }
+  };
+
+  // Super Admin or Group Admin: Pre-register or add an existing member by email into one or more groups
+  const handlePreRegisterMember = async (payload: {
+    email: string;
+    displayName: string;
+    groupId: string;
+    groupIds: string[];
+    role: UserRole;
+    hasPaid?: boolean;
+    amountPaid?: number;
+  }) => {
+    if (!currentUser) return;
+    const cleanEmail = payload.email.trim().toLowerCase();
+    const cleanName = payload.displayName.trim().slice(0, 60);
+    const cleanAmount = Math.max(0, Math.min(50000, Number(payload.amountPaid) || 0));
+
+    // Check if a user with this email or displayName already exists in cloudUsers — if so, merge their groupIds!
+    const existingUser = cloudUsers.find(
+      (u) =>
+        u.email.trim().toLowerCase() === cleanEmail ||
+        (u.email.endsWith('@kopgroep27.nl') &&
+          u.displayName.trim().toLowerCase() === cleanName.toLowerCase())
+    );
+
+    if (existingUser) {
+      const mergedGroups = Array.from(
+        new Set([...getUserGroupIds(existingUser), ...payload.groupIds, payload.groupId])
+      ).slice(0, 20);
+
+      try {
+        await updateDoc(doc(db, 'user_accounts', existingUser.id), {
+          email: cleanEmail.slice(0, 160),
+          groupIds: mergedGroups,
+          displayName: cleanName || existingUser.displayName,
+          role:
+            existingUser.role === 'super_admin'
+              ? 'super_admin'
+              : payload.role || existingUser.role,
+          hasPaid:
+            payload.hasPaid !== undefined
+              ? Boolean(payload.hasPaid)
+              : Boolean(existingUser.hasPaid),
+          amountPaid:
+            payload.amountPaid !== undefined
+              ? cleanAmount
+              : existingUser.amountPaid || 0,
+          updatedAt: serverTimestamp(),
+        });
+        showToast(
+          `${cleanName || existingUser.displayName} (${cleanEmail}) is bijgewerkt en gekoppeld aan ${mergedGroups.length} groep(en)!`
+        );
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `user_accounts/${existingUser.id}`);
+      }
+      return;
+    }
+
+    const inviteId = sanitizeId(
+      `invite-${payload.groupId}-${cleanEmail.replace(/[^a-zA-Z0-9]/g, '-')}`
+    ).slice(0, 120);
+    const normalizedGroupIds = Array.from(
+      new Set([payload.groupId, ...payload.groupIds])
+    ).slice(0, 20);
+
+    try {
+      await setDoc(doc(db, 'user_accounts', inviteId), {
+        uid: inviteId,
+        email: cleanEmail.slice(0, 160),
+        displayName: cleanName,
+        groupId: payload.groupId,
+        groupIds: normalizedGroupIds,
+        role: payload.role,
+        hasPaid: Boolean(payload.hasPaid),
+        amountPaid: cleanAmount,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      showToast(
+        `${cleanName} (${cleanEmail}) toegevoegd aan ${activeGroupRecord.name}!`
+      );
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `user_accounts/${inviteId}`);
+    }
+  };
+
+  // Remove a user from a specific group (if they belong to multiple groups) or delete their user_account record
+  const handleRemoveUserFromGroupOrDelete = async (
+    targetUser: UserAccountRecord,
+    groupIdToRemoveFrom: string
+  ) => {
+    if (!currentUser) return;
+    const currentGroups = getUserGroupIds(targetUser);
+
+    if (currentGroups.length > 1 && currentGroups.includes(groupIdToRemoveFrom)) {
+      const remainingGroups = currentGroups.filter((gid) => gid !== groupIdToRemoveFrom);
+      const nextPrimary =
+        targetUser.groupId === groupIdToRemoveFrom
+          ? remainingGroups[0]
+          : targetUser.groupId;
+
+      try {
+        await updateDoc(doc(db, 'user_accounts', targetUser.id), {
+          groupId: nextPrimary,
+          groupIds: remainingGroups,
+          updatedAt: serverTimestamp(),
+        });
+        showToast(
+          `${targetUser.displayName} is verwijderd uit ${activeGroupRecord.name} (blijft lid van ${remainingGroups.length} andere groep(en)).`
+        );
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `user_accounts/${targetUser.id}`);
+      }
+      return;
+    }
+
+    try {
+      const userRef = doc(db, 'user_accounts', targetUser.id);
+      const snap = await getDoc(userRef);
+      if (snap.exists()) {
+        await deleteDoc(userRef);
+      }
+      showToast(`${targetUser.displayName} verwijderd uit ${activeGroupRecord.name}.`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `user_accounts/${targetUser.id}`);
+    }
+  };
+
+  // Sync existing participants (from Deelnemers & Auto's) and voters/house owners into /user_accounts for the active group
+  const handleSyncGroupParticipantsToUsers = async (silent = false) => {
+    if (!currentUser || !isAdminUser) return;
+
+    const existingInGroup = cloudUsers.filter((u) =>
+      userBelongsToGroup(u, activeTripId)
+    );
+    const knownNames = new Set(
+      existingInGroup.map((u) => u.displayName.trim().toLowerCase())
+    );
+    const knownUids = new Set(existingInGroup.map((u) => u.uid));
+
+    const candidates: { name: string; uidHint?: string }[] = [];
+
+    activeParticipants.forEach((p) => {
+      const clean = p.name.trim();
+      if (clean && !knownNames.has(clean.toLowerCase())) {
+        knownNames.add(clean.toLowerCase());
+        candidates.push({ name: clean });
+      }
+    });
+
+    activeHouses.forEach((h) => {
+      const addedByClean = (h.addedBy || '').trim();
+      if (
+        addedByClean &&
+        addedByClean.toLowerCase() !== 'groepslid' &&
+        !knownNames.has(addedByClean.toLowerCase()) &&
+        (!h.ownerId || !knownUids.has(h.ownerId))
+      ) {
+        knownNames.add(addedByClean.toLowerCase());
+        candidates.push({ name: addedByClean, uidHint: h.ownerId });
+      }
+      (h.votes || []).forEach((v) => {
+        const voterClean = (v.voterName || '').trim();
+        if (
+          voterClean &&
+          voterClean.toLowerCase() !== 'groepslid' &&
+          !knownNames.has(voterClean.toLowerCase()) &&
+          (!v.userId || !knownUids.has(v.userId))
+        ) {
+          knownNames.add(voterClean.toLowerCase());
+          candidates.push({ name: voterClean, uidHint: v.userId });
+        }
+      });
+    });
+
+    if (candidates.length === 0) return;
+
+    let addedCount = 0;
+    for (const c of candidates) {
+      const slug = c.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40);
+      const docId = sanitizeId(`lid-${activeTripId}-${slug || Date.now()}`).slice(
+        0,
+        120
+      );
+      const placeholderEmail = `${slug || 'deelnemer'}@kopgroep27.nl`;
+
+      try {
+        const ref = doc(db, 'user_accounts', docId);
+        const snap = await getDoc(ref);
+        if (!snap.exists()) {
+          await setDoc(ref, {
+            uid: docId,
+            email: placeholderEmail,
+            displayName: c.name.slice(0, 60),
+            groupId: activeTripId,
+            groupIds: [activeTripId],
+            role: 'member',
+            hasPaid: false,
+            amountPaid: 0,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+          addedCount++;
+        }
+      } catch (err) {
+        console.error('Error syncing participant to user_accounts:', err);
+      }
+    }
+
+    if (addedCount > 0 && !silent) {
+      showToast(
+        `${addedCount} bestaande deelnemer(s) gekoppeld aan de gebruikerslijst van ${activeGroupRecord.name}!`
+      );
+    }
+  };
+
+  // Automatically sync existing participants/voters of the group into user_accounts when an admin opens the group
+  useEffect(() => {
+    if (
+      !isAdminUser ||
+      !currentUser ||
+      cloudParticipants === null ||
+      cloudHouses === null
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      handleSyncGroupParticipantsToUsers(true);
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [
+    isAdminUser,
+    currentUser,
+    activeTripId,
+    cloudParticipants?.length,
+    cloudHouses?.length,
+    cloudUsers.length,
+  ]);
+
+  // Ensure visibleUsers passed to UserGroupAdminView always includes currentUserAccount + any activeParticipants not yet written
+  const mergedUsersForAdminView: UserAccountRecord[] = useMemo(() => {
+    const mapById = new Map<string, UserAccountRecord>();
+    cloudUsers.forEach((u) => mapById.set(u.id, u));
+
+    if (currentUserAccount && !mapById.has(currentUserAccount.id)) {
+      mapById.set(currentUserAccount.id, currentUserAccount);
+    }
+
+    const existingNamesInActiveGroup = new Set(
+      Array.from(mapById.values())
+        .filter((u) => userBelongsToGroup(u, activeTripId))
+        .map((u) => u.displayName.trim().toLowerCase())
+    );
+
+    activeParticipants.forEach((p) => {
+      const cleanName = p.name.trim();
+      if (cleanName && !existingNamesInActiveGroup.has(cleanName.toLowerCase())) {
+        existingNamesInActiveGroup.add(cleanName.toLowerCase());
+        const slug = cleanName
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 40);
+        const docId = sanitizeId(`lid-${activeTripId}-${slug || p.id}`).slice(
+          0,
+          120
+        );
+        if (!mapById.has(docId)) {
+          mapById.set(docId, {
+            id: docId,
+            uid: docId,
+            email: `${slug || 'deelnemer'}@kopgroep27.nl`,
+            displayName: cleanName,
+            groupId: activeTripId,
+            groupIds: [activeTripId],
+            role: 'member',
+            hasPaid: false,
+            amountPaid: 0,
+            createdAt: p.createdAt,
+            updatedAt: p.updatedAt,
+          });
+        }
+      }
+    });
+
+    return Array.from(mapById.values());
+  }, [cloudUsers, currentUserAccount, activeParticipants, activeTripId]);
+
+  // Send 1-week post-trip review reminder email via Gmail API and record reviewReminderSentAt on the group document
+  const handleConfirmSendReviewReminderEmail = async (payload: {
+    groupId: string;
+    toEmails: string[];
+    subject: string;
+    bodyText: string;
+  }) => {
+    if (!currentUser) return;
+
+    await sendGroupReviewReminderEmailViaGmail({
+      toEmails: payload.toEmails,
+      subject: payload.subject,
+      bodyText: payload.bodyText,
+    });
+
+    const sentIso = new Date().toISOString();
+    const groupRef = doc(db, 'groups', payload.groupId);
+    try {
+      const snap = await getDoc(groupRef);
+      if (snap.exists()) {
+        await updateDoc(groupRef, {
+          reviewReminderSentAt: sentIso,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch (error) {
+      console.error('Kon reviewReminderSentAt niet opslaan op groepsdocument:', error);
+    }
+
+    showToast(
+      `Review-oproep succesvol per e-mail verzonden naar ${payload.toEmails.length} groepsleden!`
+    );
+  };
+
   const categoryLabels: Record<GeneralIdeaRecord['category'], string> = {
     regio: 'Regio & Klimmen',
     route: 'Routes & GPX',
@@ -1187,21 +2183,40 @@ function MainApplication() {
     <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-[#0F172A] overflow-x-hidden">
       {/* Top Bar Contract: Strictly 3 zones separated by gap-4 sm:gap-8 */}
       <header className="flex items-center justify-between gap-3 sm:gap-8 px-3 sm:px-6 py-3 bg-white border-b border-slate-200 sticky top-0 z-30">
-        {/* Zone 1: Single text element wordmark */}
-        <a
-          href="#top"
-          onClick={(e) => {
-            e.preventDefault();
-            setActiveView('vergelijken');
-            setMobilePane('lijst');
-          }}
-          className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 font-display uppercase whitespace-nowrap shrink-0"
-        >
-          Kopgroep ’27
-        </a>
+        {/* Zone 1: Single text element wordmark + Active Group Badge */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <a
+            href="#top"
+            onClick={(e) => {
+              e.preventDefault();
+              setActiveView('vergelijken');
+              setMobilePane('lijst');
+            }}
+            className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 font-display uppercase whitespace-nowrap shrink-0"
+          >
+            {activeGroupRecord.name}
+          </a>
+          {userAccessibleGroups.length > 1 && (
+            <select
+              value={activeTripId}
+              onChange={(e) => {
+                setIsTestEnvironment(false);
+                setSelectedGroupId(e.target.value);
+              }}
+              aria-label="Wissel actieve gebruikersgroep"
+              className="hidden sm:inline-block text-xs font-bold bg-orange-50 text-orange-900 border border-orange-300 rounded-lg px-2 py-1 cursor-pointer"
+            >
+              {userAccessibleGroups.map((g) => (
+                <option key={g.tripId} value={g.tripId}>
+                  Groep: {g.name}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
 
-        {/* Zone 2: 4 concise single-line navigation links */}
-        <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600">
+        {/* Zone 2: Navigation links including Centrale Repository & Groepen/Gebruikers */}
+        <nav className="hidden md:flex items-center gap-5 text-sm font-medium text-slate-600">
           <button
             type="button"
             onClick={() => setActiveView('vergelijken')}
@@ -1215,14 +2230,15 @@ function MainApplication() {
           </button>
           <button
             type="button"
-            onClick={() => setActiveView('beheren')}
-            className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              activeView === 'beheren'
+            onClick={() => setActiveView('repository')}
+            className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
+              activeView === 'repository'
                 ? 'text-slate-900 underline decoration-[#FC4C02] decoration-2 underline-offset-8 font-semibold'
                 : ''
             }`}
           >
-            Lijst Beheren
+            <Trophy className="w-3.5 h-3.5 text-amber-500" />
+            Centrale Repository ({cloudRepositoryHouses.length})
           </button>
           <button
             type="button"
@@ -1246,6 +2262,31 @@ function MainApplication() {
           >
             Ideeënbord ({activeIdeas.length})
           </button>
+          <button
+            type="button"
+            onClick={() => setActiveView('beheren')}
+            className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeView === 'beheren'
+                ? 'text-slate-900 underline decoration-[#FC4C02] decoration-2 underline-offset-8 font-semibold'
+                : ''
+            }`}
+          >
+            Lijst Beheren
+          </button>
+          {canAccessAdminView && (
+            <button
+              type="button"
+              onClick={() => setActiveView('administratie')}
+              className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer inline-flex items-center gap-1.5 ${
+                activeView === 'administratie'
+                  ? 'text-slate-900 underline decoration-[#FC4C02] decoration-2 underline-offset-8 font-semibold'
+                  : ''
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4 text-[#FC4C02]" />
+              {isSuperAdmin ? 'Groepen & Users' : 'Groepsleden'}
+            </button>
+          )}
         </nav>
 
         {/* Zone 3: 1 primary action */}
@@ -1348,25 +2389,57 @@ function MainApplication() {
         <div className="max-w-[1440px] mx-auto px-3 sm:px-6 py-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div className="space-y-1 min-w-0">
             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-slate-300">
-              <span className="font-semibold text-[#FC4C02]">EVENEMENT</span>
+              <span className="font-semibold text-[#FC4C02] uppercase">
+                GROEP: {activeGroupRecord.name}
+              </span>
               <span aria-hidden="true">·</span>
               <span className="inline-flex items-center gap-1.5 text-white font-medium">
                 <Calendar className="w-3.5 h-3.5 text-[#FC4C02] shrink-0" />
-                <span>Do 27 mei t/m zo 30 mei 2027 (3 nachten)</span>
+                <span>{activeGroupRecord.periodLabel}</span>
               </span>
               <span aria-hidden="true">·</span>
-              <span>Ardennen / Zuid-Limburg / Eifel</span>
+              <span>{activeGroupRecord.regionLabel}</span>
+              {activeGroupRecord.chosenHouseTitle && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 font-bold">
+                    <Trophy className="w-3 h-3 text-amber-400" />
+                    Gekozen huisje: {activeGroupRecord.chosenHouseTitle}
+                  </span>
+                </>
+              )}
             </div>
             <h1 className="text-xl sm:text-3xl font-bold tracking-tight font-display uppercase text-white">
-              Racefiets Weekend 2027 — Accommodatie & Route Planner
+              {activeGroupRecord.name} — Accommodatie & Route Planner
             </h1>
             <p className="text-xs sm:text-sm text-slate-300 max-w-3xl">
-              Samen vakantiehuizen aandragen, vergelijken op de kaart, auto- en fietsindeling afstemmen en stemmen op de groepsfavoriet.
+              Samen vakantiehuizen aandragen, vergelijken op de kaart, auto- en fietsindeling afstemmen en het gekozen huisje delen in de Centrale Repository.
             </p>
           </div>
 
           {/* Collaborator Identity & Quick Action Controls */}
           <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {userAccessibleGroups.length > 1 && (
+              <div className="flex items-center gap-1.5 bg-orange-500/20 border border-orange-400/40 rounded-lg px-2.5 py-1.5 min-h-[38px]">
+                <Building2 className="w-3.5 h-3.5 text-orange-300 shrink-0" />
+                <select
+                  value={activeTripId}
+                  onChange={(e) => {
+                    setIsTestEnvironment(false);
+                    setSelectedGroupId(e.target.value);
+                  }}
+                  aria-label="Kies jouw actieve groep"
+                  className="bg-transparent text-xs font-extrabold text-white focus:outline-hidden cursor-pointer"
+                >
+                  {userAccessibleGroups.map((g) => (
+                    <option key={g.tripId} value={g.tripId} className="text-slate-900">
+                      Groep: {g.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             {isVerifiedMember && currentUser ? (
               <div className="flex items-center gap-2 bg-slate-800/90 border border-slate-700 rounded-lg px-3 py-1.5 min-h-[38px]">
                 <span className="text-[11px] text-slate-400 whitespace-nowrap">Weergavenaam:</span>
@@ -1387,28 +2460,32 @@ function MainApplication() {
 
             <button
               type="button"
-              onClick={() => setActiveView('deelnemers')}
-              className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              onClick={() => setActiveView('repository')}
+              className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-400/30 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <Car className="w-3.5 h-3.5 text-[#FC4C02] shrink-0" />
-              <span>Auto’s ({activeParticipants.length})</span>
+              <Trophy className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>Repository ({cloudRepositoryHouses.length})</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => setActiveView('beheren')}
-              className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <ListChecks className="w-3.5 h-3.5 text-[#FC4C02] shrink-0" />
-              <span>Beheren ({activeHouses.length})</span>
-            </button>
+            {canAccessAdminView && (
+              <button
+                type="button"
+                onClick={() => setActiveView('administratie')}
+                className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-[#FC4C02] shrink-0" />
+                <span>{isSuperAdmin ? 'Groepen & Users' : 'Groepsbeheer'}</span>
+              </button>
+            )}
 
             <button
               type="button"
               onClick={handleLogoutOrExitGuest}
               title={
                 currentUser
-                  ? `Geverifieerd ingelogd als ${currentUser.email} (UID: ${currentUser.uid.slice(0, 8)}...) — klik om uit te loggen`
+                  ? `Geverifieerd ingelogd als ${currentUser.email} (${
+                      isSuperAdmin ? 'Super User' : isGroupAdmin ? 'Groepsbeheerder' : 'Groepslid'
+                    }) — klik om uit te loggen`
                   : 'Gastmodus verlaten en inloggen'
               }
               className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
@@ -1429,6 +2506,52 @@ function MainApplication() {
           </div>
         </div>
       </section>
+
+      {/* 1-Week Post-Trip Automatic Review Reminder Call Banner */}
+      {isVerifiedMember &&
+        activeGroupRecord.chosenHouseTitle &&
+        isReviewReminderDueNow(activeGroupRecord.startDate, activeGroupRecord.endDate) &&
+        !activeGroupRecord.reviewReminderSentAt && (
+          <div className="bg-gradient-to-r from-amber-500 via-orange-600 to-amber-600 text-white border-b border-orange-700 px-3 sm:px-6 py-3 shadow-sm">
+            <div className="max-w-[1440px] mx-auto flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2.5">
+                <BellRing className="w-4 h-4 text-white shrink-0 animate-bounce" />
+                <span>
+                  <strong>1 week na jullie vakantie ({activeGroupRecord.periodLabel})!</strong> Tijd om heel{' '}
+                  <strong>{activeGroupRecord.name}</strong> per mail op te roepen een review & sterrenbeoordeling te schrijven voor{' '}
+                  <strong>“{activeGroupRecord.chosenHouseTitle}”</strong>.
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setReminderTargetGroup(activeGroupRecord)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-900 text-white font-extrabold transition cursor-pointer"
+                >
+                  <Mail className="w-3.5 h-3.5 text-orange-400" />
+                  <span>Stuur review-oproep per mail naar de groep</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const chosen = activeHouses.find(
+                      (h) => h.id === activeGroupRecord.chosenHouseId
+                    );
+                    if (chosen) {
+                      setReviewingHouse(chosen);
+                    } else {
+                      setActiveView('repository');
+                    }
+                  }}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-white font-bold transition cursor-pointer"
+                >
+                  <Star className="w-3.5 h-3.5" />
+                  <span>Direct review schrijven</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
       {/* Undo Delete Banner when a house was just deleted */}
       {lastDeletedHouse && isVerifiedMember && (
@@ -1471,12 +2594,12 @@ function MainApplication() {
 
       {/* Mobile Navigation & View Switcher (Responsive down to 320px without horizontal overflow) */}
       <div className="flex lg:hidden flex-col gap-2 px-3 py-2.5 bg-white border-b border-slate-200">
-        {/* Row 1: Primary 4 sections */}
-        <div className="grid grid-cols-4 gap-1 p-1 bg-slate-100 rounded-xl">
+        {/* Row 1: Primary sections */}
+        <div className="grid grid-cols-3 sm:grid-cols-6 gap-1 p-1 bg-slate-100 rounded-xl">
           <button
             type="button"
             onClick={() => setActiveView('vergelijken')}
-            className={`min-h-[40px] px-1.5 py-1.5 text-[11px] sm:text-xs font-semibold rounded-lg transition-colors truncate cursor-pointer ${
+            className={`min-h-[38px] px-1.5 py-1.5 text-[11px] sm:text-xs font-semibold rounded-lg transition-colors truncate cursor-pointer ${
               activeView === 'vergelijken' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
             }`}
           >
@@ -1484,17 +2607,17 @@ function MainApplication() {
           </button>
           <button
             type="button"
-            onClick={() => setActiveView('beheren')}
-            className={`min-h-[40px] px-1.5 py-1.5 text-[11px] sm:text-xs font-semibold rounded-lg transition-colors truncate cursor-pointer ${
-              activeView === 'beheren' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+            onClick={() => setActiveView('repository')}
+            className={`min-h-[38px] px-1.5 py-1.5 text-[11px] sm:text-xs font-semibold rounded-lg transition-colors truncate cursor-pointer ${
+              activeView === 'repository' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
             }`}
           >
-            Beheren
+            Repository ({cloudRepositoryHouses.length})
           </button>
           <button
             type="button"
             onClick={() => setActiveView('deelnemers')}
-            className={`min-h-[40px] px-1.5 py-1.5 text-[11px] sm:text-xs font-semibold rounded-lg transition-colors truncate cursor-pointer ${
+            className={`min-h-[38px] px-1.5 py-1.5 text-[11px] sm:text-xs font-semibold rounded-lg transition-colors truncate cursor-pointer ${
               activeView === 'deelnemers' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
             }`}
           >
@@ -1503,12 +2626,32 @@ function MainApplication() {
           <button
             type="button"
             onClick={() => setActiveView('ideeen')}
-            className={`min-h-[40px] px-1.5 py-1.5 text-[11px] sm:text-xs font-semibold rounded-lg transition-colors truncate cursor-pointer ${
+            className={`min-h-[38px] px-1.5 py-1.5 text-[11px] sm:text-xs font-semibold rounded-lg transition-colors truncate cursor-pointer ${
               activeView === 'ideeen' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
             }`}
           >
             Ideeën ({activeIdeas.length})
           </button>
+          <button
+            type="button"
+            onClick={() => setActiveView('beheren')}
+            className={`min-h-[38px] px-1.5 py-1.5 text-[11px] sm:text-xs font-semibold rounded-lg transition-colors truncate cursor-pointer ${
+              activeView === 'beheren' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+            }`}
+          >
+            Beheren
+          </button>
+          {canAccessAdminView && (
+            <button
+              type="button"
+              onClick={() => setActiveView('administratie')}
+              className={`min-h-[38px] px-1.5 py-1.5 text-[11px] sm:text-xs font-semibold rounded-lg transition-colors truncate cursor-pointer ${
+                activeView === 'administratie' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+              }`}
+            >
+              {isSuperAdmin ? 'Groepen' : 'Leden'}
+            </button>
+          )}
         </div>
 
         {/* Row 2: Explicit List vs Map Switcher on mobile so Huisjeslijst is always prominent */}
@@ -1999,8 +3142,20 @@ function MainApplication() {
                           : 'border-slate-200 hover:border-slate-300'
                       }`}
                     >
-                      {/* Top Groepsfavoriet banner if #1 */}
-                      {isFavorite && (
+                      {/* Top Chosen House OR Groepsfavoriet banner */}
+                      {activeGroupRecord.chosenHouseId === house.id ? (
+                        <div className="bg-gradient-to-r from-amber-500 to-orange-600 text-white px-4 py-2 flex items-center justify-between gap-2 text-xs">
+                          <span className="font-extrabold flex items-center gap-1.5">
+                            <Trophy className="w-4 h-4 text-white shrink-0" />
+                            <span>
+                              HET GEWORDEN HUISJE VAN {activeGroupRecord.name.toUpperCase()} 🏆 — Gedeeld in Centrale Repository
+                            </span>
+                          </span>
+                          <span className="font-mono-num font-bold text-amber-100 shrink-0">
+                            {ratingSummary.formattedLabel}
+                          </span>
+                        </div>
+                      ) : isFavorite ? (
                         <div className="bg-amber-500/10 border-b border-amber-300/60 px-4 py-2 flex items-center justify-between gap-2 text-xs">
                           <span className="font-bold text-amber-900 flex items-center gap-1.5">
                             <Trophy className="w-4 h-4 text-amber-600 shrink-0" />
@@ -2010,7 +3165,7 @@ function MainApplication() {
                             {ratingSummary.formattedLabel}
                           </span>
                         </div>
-                      )}
+                      ) : null}
 
                       <div className="grid grid-cols-1 md:grid-cols-12">
                         {/* Left Visual Column */}
@@ -2150,7 +3305,7 @@ function MainApplication() {
                             </div>
                           </div>
 
-                          {/* Action Buttons Row: Map Focus, Route Link, External Site */}
+                          {/* Action Buttons Row: Map Focus, Chosen House & Review, Route Link, External Site */}
                           <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
                             <div className="flex flex-wrap items-center gap-2">
                               <button
@@ -2161,6 +3316,23 @@ function MainApplication() {
                                 <MapPin className="w-3.5 h-3.5 text-[#FC4C02]" />
                                 Toon op kaart
                               </button>
+
+                              {isVerifiedMember && (
+                                <button
+                                  type="button"
+                                  onClick={() => setReviewingHouse(house)}
+                                  className={`min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                                    activeGroupRecord.chosenHouseId === house.id
+                                      ? 'bg-amber-500 text-white hover:bg-amber-600'
+                                      : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300'
+                                  }`}
+                                >
+                                  <Trophy className="w-3.5 h-3.5" />
+                                  {activeGroupRecord.chosenHouseId === house.id
+                                    ? 'Gekozen huisje & Review bewerken'
+                                    : 'Dit huisje is het geworden & Review'}
+                                </button>
+                              )}
 
                               {house.routeUrl && (
                                 <a
@@ -3192,11 +4364,89 @@ function MainApplication() {
         </main>
       )}
 
+      {/* VIEW 5: Centrale Repository van Gekozen & Beoordeelde Huisjes */}
+      {activeView === 'repository' && (
+        <main className="flex-1 max-w-[1280px] w-full mx-auto px-3 sm:px-6 py-6">
+          <RepositoryView
+            repositoryHouses={cloudRepositoryHouses}
+            activeGroupHouses={activeHouses}
+            activeGroupId={activeTripId}
+            activeGroupName={activeGroupRecord.name}
+            cyclistCount={cyclistCount}
+            canWrite={isVerifiedMember}
+            onAddRepoHouseToGroup={handleAddRepoHouseToGroup}
+            onRequireLogin={() =>
+              showToast('Log eerst in met je Google-account of e-mailadres om een huisje aan jullie groepslijst toe te voegen.')
+            }
+          />
+        </main>
+      )}
+
+      {/* VIEW 6: Hiërarchische Gebruikers- & Groepsadministratie */}
+      {activeView === 'administratie' && (
+        <main className="flex-1 max-w-[1280px] w-full mx-auto px-3 sm:px-6 py-6">
+          {canAccessAdminView && currentUser ? (
+            <UserGroupAdminView
+              currentUserRole={
+                isSuperAdmin
+                  ? 'super_admin'
+                  : currentUserAccount?.role || 'member'
+              }
+              currentUserEmail={currentUser.email || ''}
+              currentUserUid={currentUser.uid}
+              activeGroup={activeGroupRecord}
+              allGroups={allGroupsWithDefault}
+              visibleUsers={mergedUsersForAdminView}
+              activeGroupParticipants={activeParticipants}
+              activeGroupHouses={activeHouses}
+              onSwitchActiveGroup={(groupId) => {
+                if (
+                  isSuperAdmin ||
+                  userAccessibleGroups.some((g) => g.tripId === groupId)
+                ) {
+                  setIsTestEnvironment(false);
+                  setSelectedGroupId(groupId);
+                  showToast(`Groep "${groupId}" geopend voor deelnemersbeheer`);
+                }
+              }}
+              onCreateGroup={handleCreateGroup}
+              onUpdateGroupDetails={handleUpdateGroupDetails}
+              onUpdateUserAccount={handleUpdateUserAccount}
+              onPreRegisterMember={handlePreRegisterMember}
+              onRemoveUserFromGroupOrDelete={handleRemoveUserFromGroupOrDelete}
+              onSyncGroupParticipantsToUsers={() =>
+                handleSyncGroupParticipantsToUsers(false)
+              }
+              onOpenReviewReminderModal={(group) => setReminderTargetGroup(group)}
+            />
+          ) : (
+            <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-2">
+              <ShieldCheck className="w-8 h-8 text-slate-400 mx-auto" />
+              <h3 className="text-base font-bold text-slate-900">
+                Alleen toegankelijk voor Super User en Groepsbeheerders
+              </h3>
+              <p className="text-xs text-slate-500">
+                Je bent momenteel ingelogd als groepslid van {activeGroupRecord.name}.
+              </p>
+            </div>
+          )}
+        </main>
+      )}
+
       {/* Quiet Footer */}
       <footer className="bg-white border-t border-slate-200 mt-12">
         <div className="max-w-[1440px] mx-auto px-3 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500">
-          <span>Kopgroep ’27 — Racefiets Weekend Planner (Do 27 mei t/m zo 30 mei 2027)</span>
+          <span>
+            {activeGroupRecord.name} — Racefiets Weekend Planner ({activeGroupRecord.periodLabel})
+          </span>
           <div className="flex flex-wrap items-center justify-center gap-4">
+            <button
+              type="button"
+              onClick={() => setActiveView('repository')}
+              className="hover:text-slate-900 underline cursor-pointer"
+            >
+              Centrale Repository ({cloudRepositoryHouses.length})
+            </button>
             <button
               type="button"
               onClick={() => setActiveView('beheren')}
@@ -3211,6 +4461,15 @@ function MainApplication() {
             >
               Deelnemers & Auto’s
             </button>
+            {canAccessAdminView && (
+              <button
+                type="button"
+                onClick={() => setActiveView('administratie')}
+                className="hover:text-slate-900 underline cursor-pointer"
+              >
+                {isSuperAdmin ? 'Groepen & Gebruikers' : 'Groepsleden beheren'}
+              </button>
+            )}
             {isVerifiedMember && (
               <button
                 type="button"
@@ -3227,7 +4486,7 @@ function MainApplication() {
         </div>
       </footer>
 
-      {/* Modal */}
+      {/* Modal: Add or Edit House */}
       <AddHouseModal
         isOpen={isAddModalOpen}
         onClose={() => {
@@ -3238,6 +4497,35 @@ function MainApplication() {
         cyclistCount={cyclistCount}
         defaultUserName={friendName}
         editingHouse={editingHouse}
+      />
+
+      {/* Modal: Mark House as Chosen & Write Group Review for Central Repository */}
+      <ChosenHouseReviewModal
+        isOpen={Boolean(reviewingHouse)}
+        onClose={() => setReviewingHouse(null)}
+        house={reviewingHouse}
+        activeGroupName={activeGroupRecord.name}
+        existingRepoEntry={
+          reviewingHouse
+            ? cloudRepositoryHouses.find(
+                (r) =>
+                  r.sourceGroupId === activeTripId && r.sourceHouseId === reviewingHouse.id
+              ) || null
+            : null
+        }
+        defaultReviewerName={friendName || currentUser?.displayName || 'Groepslid'}
+        onSaveChosenAndReview={handleSaveChosenAndReview}
+      />
+
+      {/* Modal: Confirm & Send 1-Week Post-Vacation Review Reminder Email via Gmail API */}
+      <ReviewReminderEmailModal
+        isOpen={Boolean(reminderTargetGroup)}
+        onClose={() => setReminderTargetGroup(null)}
+        group={reminderTargetGroup || activeGroupRecord}
+        groupMembers={mergedUsersForAdminView.filter((u) =>
+          userBelongsToGroup(u, (reminderTargetGroup || activeGroupRecord).tripId)
+        )}
+        onConfirmSendEmail={handleConfirmSendReviewReminderEmail}
       />
     </div>
   );

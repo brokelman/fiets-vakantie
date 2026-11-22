@@ -222,6 +222,60 @@ async function runAcceptanceTests() {
   assert.equal(guestDeleteBlocked, true, 'Onbevestigde gast mag GEEN huisje verwijderen in Firestore');
   console.log('✓ Onbevestigde gast-verwijderactie correct geblokkeerd door firestore.rules (PERMISSION_DENIED).');
 
+  // 4E. Central Repository read works & unauthenticated write to /repository_houses and /user_accounts is blocked
+  const repoSnap = await getDocs(
+    query(collection(db, 'repository_houses'), where('ratingStars', 'in', [1, 2, 3, 4, 5]))
+  );
+  assert.equal(Array.isArray(repoSnap.docs), true);
+  console.log(`✓ Centrale Repository query geslaagd (${repoSnap.size} gekozen huisjes in repository).`);
+
+  let guestRepoWriteBlocked = false;
+  try {
+    await setDoc(doc(db, 'repository_houses', 'test-unauthorized-repo-house'), {
+      sourceHouseId: 'huis-1',
+      sourceGroupId: 'racefiets-2027-test',
+      sourceGroupName: 'Test Groep',
+      title: 'Illegaal Repo Huisje',
+      url: 'https://example.com/repo',
+      photoUrl: '',
+      locationName: 'Ardennen',
+      lat: 50.2,
+      lng: 5.7,
+      totalPrice: 1200,
+      bedrooms: 4,
+      bathrooms: 2,
+      hasBbq: true,
+      hasFireplace: false,
+      hasJacuzzi: false,
+      hasSauna: false,
+      routeUrl: '',
+      notes: '',
+      ratingStars: 5,
+      reviewText: 'Nep review',
+      reviewerName: 'Gast',
+      reviewerId: 'fake-uid',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err: any) {
+    if (err?.code === 'permission-denied' || String(err).includes('permission-denied')) {
+      guestRepoWriteBlocked = true;
+    }
+  }
+  assert.equal(guestRepoWriteBlocked, true, 'Onbevestigde gast mag GEEN huisje in de Centrale Repository plaatsen');
+  console.log('✓ Onbevestigde schrijfactie op /repository_houses correct geblokkeerd (PERMISSION_DENIED).');
+
+  let guestUserAccountReadBlocked = false;
+  try {
+    await getDocs(collection(db, 'user_accounts'));
+  } catch (err: any) {
+    if (err?.code === 'permission-denied' || String(err).includes('permission-denied')) {
+      guestUserAccountReadBlocked = true;
+    }
+  }
+  assert.equal(guestUserAccountReadBlocked, true, 'Onbevestigde gast mag GEEN user_accounts uitlezen');
+  console.log('✓ Onbevestigde leesactie op /user_accounts correct geblokkeerd (PERMISSION_DENIED).');
+
   console.log('\nALLE GEAUTOMATISEERDE ACCEPTATIETESTS ZIJN GESLAAGD.');
   process.exit(0);
 }

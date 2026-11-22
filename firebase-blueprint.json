@@ -1,16 +1,338 @@
 {
   "entities": {
-    "House": {
-      "title": "House",
-      "description": "Een aangedragen vakantiehuis voor het Racefiets Weekend 2027.",
+    "Group": {
+      "title": "Group",
+      "description": "Een fietsgroep of vriendengroep met eigen leden, beheerder en gekozen vakantiehuis.",
       "type": "object",
       "properties": {
         "tripId": {
           "type": "string",
-          "description": "Vaste identifier van het groepsweekend.",
-          "pattern": "^racefiets-2027(-test)?$",
-          "minLength": 14,
-          "maxLength": 19
+          "description": "Unieke groeps-ID die gekoppeld is aan houses, ideas en participants.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "description": "Weergavenaam van de groep.",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "periodLabel": {
+          "type": "string",
+          "description": "Datum of periode van het fietsweekend.",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "regionLabel": {
+          "type": "string",
+          "description": "Regio of bestemming van de groep.",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "chosenHouseId": {
+          "type": "string",
+          "description": "ID van het definitief gekozen vakantiehuis van deze groep (of leeg indien nog niet gekozen).",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "chosenHouseTitle": {
+          "type": "string",
+          "description": "Naam van het definitief gekozen vakantiehuis.",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "startDate": {
+          "type": "string",
+          "description": "Startdatum van de vakantie in YYYY-MM-DD formaat.",
+          "minLength": 0,
+          "maxLength": 10
+        },
+        "endDate": {
+          "type": "string",
+          "description": "Einddatum van de vakantie in YYYY-MM-DD formaat (bepaalt wanneer 1 week na afloop de review-herinneringsmail wordt verstuurd).",
+          "minLength": 0,
+          "maxLength": 10
+        },
+        "reviewReminderSentAt": {
+          "type": "string",
+          "description": "ISO timestamp waarop de review-herinneringsmail naar de hele groep is verstuurd (of leeg).",
+          "minLength": 0,
+          "maxLength": 40
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "UID van de Super User die de groep heeft aangemaakt.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Aanmaaktijdstip op de server."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Laatste wijzigingstijdstip op de server."
+        }
+      },
+      "required": [
+        "tripId",
+        "name",
+        "periodLabel",
+        "regionLabel",
+        "chosenHouseId",
+        "chosenHouseTitle",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Gebruikersaccount met rol en lidmaatschap van één of meerdere groepen in de hiërarchie (super_admin, group_admin of member).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID van de gebruiker.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "description": "E-mailadres van de gebruiker.",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Weergavenaam van de gebruiker.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "groupId": {
+          "type": "string",
+          "description": "Primaire tripId van de groep waartoe deze gebruiker behoort.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "groupIds": {
+          "type": "array",
+          "description": "Lijst van alle tripIds (groepen) waar deze gebruiker lid van is (max 20 groepen)."
+        },
+        "role": {
+          "type": "string",
+          "description": "Rol binnen de hiërarchie.",
+          "enum": ["super_admin", "group_admin", "member"],
+          "minLength": 6,
+          "maxLength": 11
+        },
+        "hasPaid": {
+          "type": "boolean",
+          "description": "Of de gebruiker/deelnemer zijn of haar bijdrage heeft betaald (voorbereid op betaaldienst)."
+        },
+        "amountPaid": {
+          "type": "number",
+          "description": "Betaald bedrag in euro's (voorbereid op betaaldienst).",
+          "minimum": 0,
+          "maximum": 50000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Aanmaaktijdstip op de server."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Laatste wijzigingstijdstip op de server."
+        }
+      },
+      "required": [
+        "uid",
+        "email",
+        "displayName",
+        "groupId",
+        "role",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RepositoryHouse": {
+      "title": "RepositoryHouse",
+      "description": "Centraal archief-vakantiehuis dat door een groep is gekozen en beoordeeld, zodat andere groepen erin kunnen bladeren en het met één klik aan hun eigen lijst kunnen toevoegen.",
+      "type": "object",
+      "properties": {
+        "sourceHouseId": {
+          "type": "string",
+          "description": "Origineel houseId uit de groep.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sourceGroupId": {
+          "type": "string",
+          "description": "tripId van de groep die dit huisje heeft gekozen.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "sourceGroupName": {
+          "type": "string",
+          "description": "Naam van de groep die in dit huisje is verbleven of het heeft gekozen.",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "title": {
+          "type": "string",
+          "description": "Naam van het vakantiehuis.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "url": {
+          "type": "string",
+          "description": "Externe link naar de accommodatie.",
+          "pattern": "^https?://.+",
+          "minLength": 8,
+          "maxLength": 2000
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Optionele directe foto-URL.",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "locationName": {
+          "type": "string",
+          "description": "Plaatsnaam of regio van het huisje.",
+          "minLength": 2,
+          "maxLength": 160
+        },
+        "lat": {
+          "type": "number",
+          "description": "Breedtegraad."
+        },
+        "lng": {
+          "type": "number",
+          "description": "Lengtegraad."
+        },
+        "totalPrice": {
+          "type": "number",
+          "description": "Richtprijs voor een weekend (3 nachten)."
+        },
+        "bedrooms": {
+          "type": "number",
+          "description": "Aantal slaapkamers."
+        },
+        "bathrooms": {
+          "type": "number",
+          "description": "Aantal badkamers."
+        },
+        "hasBbq": {
+          "type": "boolean",
+          "description": "BBQ plaats aanwezig."
+        },
+        "hasFireplace": {
+          "type": "boolean",
+          "description": "Open haard aanwezig."
+        },
+        "hasJacuzzi": {
+          "type": "boolean",
+          "description": "Jacuzzi aanwezig."
+        },
+        "hasSauna": {
+          "type": "boolean",
+          "description": "Sauna aanwezig."
+        },
+        "routeUrl": {
+          "type": "string",
+          "description": "Optionele fietsroute-URL.",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "notes": {
+          "type": "string",
+          "description": "Algemene omschrijving en beklimmingen in de buurt.",
+          "minLength": 0,
+          "maxLength": 1000
+        },
+        "ratingStars": {
+          "type": "number",
+          "description": "Eindbeoordeling van de groep in sterren (1 t/m 5)."
+        },
+        "reviewText": {
+          "type": "string",
+          "description": "Ervaring en review van de groep over het gekozen huisje.",
+          "minLength": 2,
+          "maxLength": 1200
+        },
+        "reviewerName": {
+          "type": "string",
+          "description": "Naam van degene die de groepsreview heeft geschreven.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "reviewerId": {
+          "type": "string",
+          "description": "UID van de auteur van de review.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Aanmaaktijdstip op de server."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Laatste wijzigingstijdstip op de server."
+        }
+      },
+      "required": [
+        "sourceHouseId",
+        "sourceGroupId",
+        "sourceGroupName",
+        "title",
+        "url",
+        "photoUrl",
+        "locationName",
+        "lat",
+        "lng",
+        "totalPrice",
+        "bedrooms",
+        "bathrooms",
+        "hasBbq",
+        "hasFireplace",
+        "hasJacuzzi",
+        "hasSauna",
+        "routeUrl",
+        "notes",
+        "ratingStars",
+        "reviewText",
+        "reviewerName",
+        "reviewerId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "House": {
+      "title": "House",
+      "description": "Een aangedragen vakantiehuis binnen een specifieke groep.",
+      "type": "object",
+      "properties": {
+        "tripId": {
+          "type": "string",
+          "description": "Identifier van de groep.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 3,
+          "maxLength": 64
         },
         "ownerId": {
           "type": "string",
@@ -251,10 +573,10 @@
       "properties": {
         "tripId": {
           "type": "string",
-          "description": "Vaste identifier van het groepsweekend.",
-          "pattern": "^racefiets-2027(-test)?$",
-          "minLength": 14,
-          "maxLength": 19
+          "description": "Identifier van de groep.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 3,
+          "maxLength": 64
         },
         "authorId": {
           "type": "string",
@@ -323,10 +645,10 @@
       "properties": {
         "tripId": {
           "type": "string",
-          "description": "Vaste identifier van het groepsweekend.",
-          "pattern": "^racefiets-2027(-test)?$",
-          "minLength": 14,
-          "maxLength": 19
+          "description": "Identifier van de groep.",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 3,
+          "maxLength": 64
         },
         "ownerId": {
           "type": "string",
@@ -384,11 +706,29 @@
     }
   },
   "firestore": {
+    "/groups/{groupId}": {
+      "schema": {
+        "$ref": "#/entities/Group"
+      },
+      "description": "Collectie van gebruikersgroepen met hun gekozen vakantiehuis en metadata."
+    },
+    "/user_accounts/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserAccount"
+      },
+      "description": "Collectie van geregistreerde gebruikersaccounts met groepskoppeling en hiërarchische rol."
+    },
+    "/repository_houses/{repoHouseId}": {
+      "schema": {
+        "$ref": "#/entities/RepositoryHouse"
+      },
+      "description": "Centrale repository van gekozen vakantiehuizen met groepsreviews en sterrenbeoordelingen."
+    },
     "/houses/{houseId}": {
       "schema": {
         "$ref": "#/entities/House"
       },
-      "description": "Collectie van aangedragen vakantiehuizen voor Racefiets Weekend 2027."
+      "description": "Collectie van aangedragen vakantiehuizen per groep."
     },
     "/houses/{houseId}/votes/{voteId}": {
       "schema": {
@@ -406,13 +746,13 @@
       "schema": {
         "$ref": "#/entities/GeneralIdea"
       },
-      "description": "Collectie van algemene ideeën, regio-suggesties en logistieke notities."
+      "description": "Collectie van algemene ideeën, regio-suggesties en logistieke notities per groep."
     },
     "/participants/{participantId}": {
       "schema": {
         "$ref": "#/entities/Participant"
       },
-      "description": "Collectie van deelnemers met auto- en fietscapaciteit voor de heen- en terugreis."
+      "description": "Collectie van deelnemers met auto- en fietscapaciteit per groep."
     }
   }
 }
