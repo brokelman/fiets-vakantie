@@ -153,6 +153,10 @@ function MainApplication() {
   const [cloudGroups, setCloudGroups] = useState<GroupRecord[]>([]);
   const [cloudUsers, setCloudUsers] = useState<UserAccountRecord[]>([]);
   const [cloudRepositoryHouses, setCloudRepositoryHouses] = useState<RepositoryHouseRecord[]>([]);
+  const [allGroupsHouses, setAllGroupsHouses] = useState<HouseRecord[]>([]);
+  const [expandedBackupHouses, setExpandedBackupHouses] = useState<Record<string, boolean>>({});
+  const [expandedLongListHouses, setExpandedLongListHouses] = useState<Record<string, boolean>>({});
+  const [shortlistViewFilter, setShortlistViewFilter] = useState<'alle' | 'shortlist' | 'longlist'>('alle');
 
   const activeTripId = useMemo(() => {
     if (isTestEnvironment) return 'racefiets-2027-test';
@@ -598,6 +602,48 @@ function MainApplication() {
       }
     );
 
+    const unsubAllHouses = onSnapshot(
+      query(collection(db, 'houses'), where('tripId', '>=', '')),
+      (snap) => {
+        const list: HouseRecord[] = snap.docs
+          .map((docSnap) => {
+            const d = docSnap.data();
+            return {
+              id: docSnap.id,
+              tripId: d.tripId || 'racefiets-2027',
+              ownerId: d.ownerId || '',
+              title: d.title || '',
+              url: d.url || '',
+              photoUrl: d.photoUrl || '',
+              locationName: d.locationName || '',
+              lat: typeof d.lat === 'number' ? d.lat : Number(d.lat) || 50.4,
+              lng: typeof d.lng === 'number' ? d.lng : Number(d.lng) || 5.8,
+              totalPrice: typeof d.totalPrice === 'number' ? d.totalPrice : Number(d.totalPrice) || 1000,
+              bedrooms: typeof d.bedrooms === 'number' ? d.bedrooms : Number(d.bedrooms) || 4,
+              bathrooms: typeof d.bathrooms === 'number' ? d.bathrooms : Number(d.bathrooms) || 2,
+              hasBbq: Boolean(d.hasBbq),
+              hasFireplace: Boolean(d.hasFireplace),
+              hasJacuzzi: Boolean(d.hasJacuzzi ?? d.hasSaunaJacuzzi),
+              hasSauna: Boolean(d.hasSauna ?? d.hasSaunaJacuzzi),
+              isShortlisted: Boolean(d.isShortlisted),
+              routeUrl: d.routeUrl || '',
+              notes: d.notes || '',
+              addedBy: d.addedBy || 'Groepslid',
+              voteScore: typeof d.voteScore === 'number' ? d.voteScore : Number(d.voteScore) || 0,
+              voteCount: typeof d.voteCount === 'number' ? d.voteCount : Number(d.voteCount) || 0,
+              status: (d.status === 'archived' ? 'archived' : 'active') as 'active' | 'archived',
+              createdAt: d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : new Date().toISOString(),
+              updatedAt: d.updatedAt?.toDate ? d.updatedAt.toDate().toISOString() : new Date().toISOString(),
+            };
+          })
+          .filter((h) => h.status !== 'archived' && h.tripId !== 'racefiets-2027-test');
+        setAllGroupsHouses(list);
+      },
+      (err) => {
+        console.error('Error loading all houses for repository:', err);
+      }
+    );
+
     let unsubUsers: (() => void) | null = null;
     if (isVerifiedMember && currentUser) {
       // Super Admin loads all users across all groups; Group Admin or Member queries users in their active group
@@ -641,6 +687,7 @@ function MainApplication() {
     return () => {
       unsubGroups();
       unsubRepo();
+      unsubAllHouses();
       if (unsubUsers) unsubUsers();
     };
   }, [isAuthReady, canViewApp, isVerifiedMember, currentUser, isSuperAdmin, activeTripId]);
@@ -762,6 +809,7 @@ function MainApplication() {
             hasFireplace: Boolean(d.hasFireplace),
             hasJacuzzi: Boolean(d.hasJacuzzi ?? d.hasSaunaJacuzzi),
             hasSauna: Boolean(d.hasSauna ?? d.hasSaunaJacuzzi),
+            isShortlisted: Boolean(d.isShortlisted),
             routeUrl: d.routeUrl || '',
             notes: d.notes || '',
             addedBy: d.addedBy || 'Groepslid',
@@ -951,6 +999,135 @@ function MainApplication() {
       : readCachedArray<ParticipantRecord>(getCloudCacheKey('participants', activeTripId));
   }, [cloudParticipants, activeTripId]);
 
+  // Unified Central Repository list: combines all non-archived houses found by all groups + explicit repository reviews, marking chosen houses
+  const combinedRepositoryHouses: RepositoryHouseRecord[] = useMemo(() => {
+    const groupById = new Map<string, GroupRecord>();
+    allGroupsWithDefault.forEach((g) => {
+      groupById.set(g.tripId, g);
+      groupById.set(g.id, g);
+    });
+
+    const repoBySourceKey = new Map<string, RepositoryHouseRecord>();
+    cloudRepositoryHouses.forEach((r) => {
+      const key = `${r.sourceGroupId}::${r.sourceHouseId}`;
+      repoBySourceKey.set(key, r);
+      repoBySourceKey.set(r.id, r);
+    });
+
+    // Combine allGroupsHouses with current activeHouses in case local snapshot is ahead
+    const mergedHousesMap = new Map<string, HouseRecord>();
+    allGroupsHouses.forEach((h) => mergedHousesMap.set(`${h.tripId}::${h.id}`, h));
+    activeHouses.forEach((h) => {
+      if (h.tripId !== 'racefiets-2027-test') {
+        mergedHousesMap.set(`${h.tripId}::${h.id}`, h);
+      }
+    });
+
+    const result: RepositoryHouseRecord[] = [];
+    const seenRepoIds = new Set<string>();
+
+    mergedHousesMap.forEach((house) => {
+      const grp = groupById.get(house.tripId);
+      const groupName =
+        grp?.name || (house.tripId === 'racefiets-2027' ? 'Kopgroep ’27' : house.tripId);
+      const isChosenByGroup = Boolean(
+        grp &&
+          ((grp.chosenHouseId && grp.chosenHouseId === house.id) ||
+            (grp.chosenHouseTitle &&
+              grp.chosenHouseTitle.trim().toLowerCase() === house.title.trim().toLowerCase()))
+      );
+
+      const sourceKey = `${house.tripId}::${house.id}`;
+      const existingRepo =
+        repoBySourceKey.get(sourceKey) ||
+        repoBySourceKey.get(`repo-${house.tripId}-${house.id}`);
+
+      if (existingRepo) {
+        seenRepoIds.add(existingRepo.id);
+        result.push({
+          ...existingRepo,
+          sourceGroupName: groupName,
+          title: house.title || existingRepo.title,
+          url: house.url || existingRepo.url,
+          photoUrl: house.photoUrl || existingRepo.photoUrl,
+          locationName: house.locationName || existingRepo.locationName,
+          lat: house.lat || existingRepo.lat,
+          lng: house.lng || existingRepo.lng,
+          totalPrice: house.totalPrice || existingRepo.totalPrice,
+          bedrooms: house.bedrooms || existingRepo.bedrooms,
+          bathrooms: house.bathrooms || existingRepo.bathrooms,
+          hasBbq: house.hasBbq,
+          hasFireplace: house.hasFireplace,
+          hasJacuzzi: house.hasJacuzzi,
+          hasSauna: house.hasSauna,
+          routeUrl: house.routeUrl || existingRepo.routeUrl,
+          notes: house.notes || existingRepo.notes,
+          isChosen: isChosenByGroup,
+        });
+      } else {
+        const ratingSummary = getHouseRatingSummary(house);
+        const derivedStars =
+          ratingSummary.count > 0 && ratingSummary.average > 0
+            ? Math.max(1, Math.min(5, Math.round(ratingSummary.average)))
+            : 4;
+
+        result.push({
+          id: `repo-${house.tripId}-${house.id}`,
+          sourceHouseId: house.id,
+          sourceGroupId: house.tripId,
+          sourceGroupName: groupName,
+          title: house.title,
+          url: house.url,
+          photoUrl: house.photoUrl || '',
+          locationName: house.locationName,
+          lat: house.lat,
+          lng: house.lng,
+          totalPrice: house.totalPrice,
+          bedrooms: house.bedrooms,
+          bathrooms: house.bathrooms,
+          hasBbq: house.hasBbq,
+          hasFireplace: house.hasFireplace,
+          hasJacuzzi: house.hasJacuzzi,
+          hasSauna: house.hasSauna,
+          routeUrl: house.routeUrl || '',
+          notes: house.notes || '',
+          ratingStars: derivedStars,
+          reviewText:
+            house.notes ||
+            (isChosenByGroup
+              ? `Uitverkozen als groepshuisje door ${groupName}.`
+              : `Aangedragen als kandidaat-huisje door ${house.addedBy} (${groupName}).`),
+          reviewerName: house.addedBy || 'Groepslid',
+          reviewerId: house.ownerId || '',
+          isChosen: isChosenByGroup,
+          createdAt: house.createdAt,
+          updatedAt: house.updatedAt,
+        });
+      }
+    });
+
+    // Also include any standalone repository_houses whose source house was deleted or came from another source
+    cloudRepositoryHouses.forEach((r) => {
+      if (!seenRepoIds.has(r.id)) {
+        const grp = groupById.get(r.sourceGroupId);
+        const groupName = grp?.name || r.sourceGroupName;
+        const isChosenByGroup = Boolean(
+          grp &&
+            ((grp.chosenHouseId && grp.chosenHouseId === r.sourceHouseId) ||
+              (grp.chosenHouseTitle &&
+                grp.chosenHouseTitle.trim().toLowerCase() === r.title.trim().toLowerCase()))
+        );
+        result.push({
+          ...r,
+          sourceGroupName: groupName,
+          isChosen: isChosenByGroup || Boolean(r.isChosen),
+        });
+      }
+    });
+
+    return result;
+  }, [allGroupsWithDefault, cloudRepositoryHouses, allGroupsHouses, activeHouses]);
+
   // Check if this browser has custom (non-demo) houses in legacy localStorage that haven't been synced to Firestore yet
   const pendingLocalCustomHouses = useMemo(() => {
     if (isTestEnvironment || cloudHouses === null) return [];
@@ -1022,10 +1199,23 @@ function MainApplication() {
     return topRating.count > 0 && topRating.average > 0 ? sorted[0].id : null;
   }, [activeHouses]);
 
-  // Filtered and sorted houses
+  // Count how many houses in the active group are currently on the Short List
+  const shortlistedHousesCount = useMemo(() => {
+    return activeHouses.filter((h) => Boolean(h.isShortlisted)).length;
+  }, [activeHouses]);
+
+  // Filtered and sorted houses (Chosen house ALWAYS at position 0; when Short List is used, Short List houses come before Long List houses!)
   const displayedHouses = useMemo(() => {
+    const chosenId = activeGroupRecord.chosenHouseId;
+    const groupUsesShortlist = shortlistedHousesCount > 0;
     return activeHouses
       .filter((h) => {
+        if (groupUsesShortlist && shortlistViewFilter === 'shortlist' && !h.isShortlisted && h.id !== chosenId) {
+          return false;
+        }
+        if (groupUsesShortlist && shortlistViewFilter === 'longlist' && (h.isShortlisted || h.id === chosenId)) {
+          return false;
+        }
         if (facilityFilter === 'bbq' && !h.hasBbq) return false;
         if (facilityFilter === 'openhaard' && !h.hasFireplace) return false;
         if (facilityFilter === 'jacuzzi' && !h.hasJacuzzi) return false;
@@ -1047,6 +1237,20 @@ function MainApplication() {
         return true;
       })
       .sort((a, b) => {
+        // 1. Chosen house is ALWAYS at the top of the list
+        const aIsChosen = Boolean(chosenId && a.id === chosenId);
+        const bIsChosen = Boolean(chosenId && b.id === chosenId);
+        if (aIsChosen !== bIsChosen) {
+          return aIsChosen ? -1 : 1;
+        }
+        // 2. If the group uses the Short List feature, Short List houses ALWAYS appear above Long List houses
+        if (groupUsesShortlist) {
+          const aShort = Boolean(a.isShortlisted);
+          const bShort = Boolean(b.isShortlisted);
+          if (aShort !== bShort) {
+            return aShort ? -1 : 1;
+          }
+        }
         if (sortBy === 'populariteit') {
           const rA = getHouseRatingSummary(a);
           const rB = getHouseRatingSummary(b);
@@ -1063,7 +1267,17 @@ function MainApplication() {
         }
         return 0;
       });
-  }, [activeHouses, facilityFilter, voteFilter, currentUser, searchQuery, sortBy]);
+  }, [
+    activeHouses,
+    activeGroupRecord.chosenHouseId,
+    shortlistedHousesCount,
+    shortlistViewFilter,
+    facilityFilter,
+    voteFilter,
+    currentUser,
+    searchQuery,
+    sortBy,
+  ]);
 
   const requireVerifiedLogin = (actionLabel: string): boolean => {
     if (!isVerifiedMember || !currentUser) {
@@ -1158,6 +1372,31 @@ function MainApplication() {
       showToast(`"${houseData.title}" staat nu live op de gedeelde lijst!`);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `houses/${newId}`);
+    }
+  };
+
+  // Toggle Short List indicator on a house (preserves 100% of existing house data)
+  const handleToggleShortlist = async (house: HouseRecord) => {
+    if (!requireVerifiedLogin('de Short List aan te passen')) return;
+    const nextVal = !house.isShortlisted;
+    // Optimistic local state update so UI responds immediately
+    setCloudHouses((prev) =>
+      prev
+        ? prev.map((h) => (h.id === house.id ? { ...h, isShortlisted: nextVal } : h))
+        : prev
+    );
+    try {
+      await updateDoc(doc(db, 'houses', house.id), {
+        isShortlisted: nextVal,
+        updatedAt: serverTimestamp(),
+      });
+      showToast(
+        nextVal
+          ? `"${house.title}" is op de Short List gezet!`
+          : `"${house.title}" is teruggezet naar de Long List.`
+      );
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `houses/${house.id}`);
     }
   };
 
@@ -2481,7 +2720,7 @@ function MainApplication() {
             }`}
           >
             <Trophy className="w-3.5 h-3.5 text-amber-500" />
-            Centrale Repository ({cloudRepositoryHouses.length})
+            Centrale Repository ({combinedRepositoryHouses.length})
           </button>
           <button
             type="button"
@@ -2707,7 +2946,7 @@ function MainApplication() {
               className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-400/30 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Trophy className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <span>Repository ({cloudRepositoryHouses.length})</span>
+              <span>Repository ({combinedRepositoryHouses.length})</span>
             </button>
 
             {canAccessAdminView && (
@@ -2855,7 +3094,7 @@ function MainApplication() {
               activeView === 'repository' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
             }`}
           >
-            Repository ({cloudRepositoryHouses.length})
+            Repository ({combinedRepositoryHouses.length})
           </button>
           <button
             type="button"
@@ -3136,6 +3375,51 @@ function MainApplication() {
                   </div>
                 </div>
 
+                {/* Optional Short List / Long List Filter Strip (shown whenever the group uses the Short List) */}
+                {shortlistedHousesCount > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                    <span className="text-[11px] font-bold text-indigo-900 flex items-center gap-1.5 uppercase tracking-wider">
+                      <ListChecks className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Selectieproces (Short List / Long List):</span>
+                    </span>
+                    <div className="flex items-center gap-1 p-1 bg-indigo-50/80 border border-indigo-200/70 rounded-lg overflow-x-auto max-w-full">
+                      <button
+                        type="button"
+                        onClick={() => setShortlistViewFilter('alle')}
+                        className={`min-h-[30px] px-2.5 py-1 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          shortlistViewFilter === 'alle'
+                            ? 'bg-indigo-600 text-white shadow-xs'
+                            : 'text-indigo-900 hover:bg-indigo-100'
+                        }`}
+                      >
+                        Short List + Long List ({activeHouses.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShortlistViewFilter('shortlist')}
+                        className={`min-h-[30px] px-2.5 py-1 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          shortlistViewFilter === 'shortlist'
+                            ? 'bg-indigo-600 text-white shadow-xs'
+                            : 'text-indigo-900 hover:bg-indigo-100'
+                        }`}
+                      >
+                        ★ Alleen Short List ({shortlistedHousesCount})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShortlistViewFilter('longlist')}
+                        className={`min-h-[30px] px-2.5 py-1 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                          shortlistViewFilter === 'longlist'
+                            ? 'bg-indigo-600 text-white shadow-xs'
+                            : 'text-indigo-900 hover:bg-indigo-100'
+                        }`}
+                      >
+                        Alleen Long List ({Math.max(0, activeHouses.length - shortlistedHousesCount)})
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* Personal Assessment Filter: Huisjes die ik nog niet beoordeeld heb */}
                 {currentUser && (
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
@@ -3233,12 +3517,16 @@ function MainApplication() {
                     : 'Geen huisjes gevonden met de huidige zoekopdracht of filter.'}
                 </p>
                 <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
-                  {(facilityFilter !== 'alle' || voteFilter !== 'alle' || searchQuery.trim()) && (
+                  {(facilityFilter !== 'alle' ||
+                    voteFilter !== 'alle' ||
+                    shortlistViewFilter !== 'alle' ||
+                    searchQuery.trim()) && (
                     <button
                       type="button"
                       onClick={() => {
                         setFacilityFilter('alle');
                         setVoteFilter('alle');
+                        setShortlistViewFilter('alle');
                         setSearchQuery('');
                       }}
                       className="min-h-[40px] px-4 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
@@ -3287,16 +3575,47 @@ function MainApplication() {
                   {displayedHouses.map((house) => {
                     const pricePerPerson = Math.round(house.totalPrice / Math.max(1, cyclistCount));
                     const ratingSummary = getHouseRatingSummary(house);
+                    const isChosen = Boolean(
+                      activeGroupRecord.chosenHouseId &&
+                        house.id === activeGroupRecord.chosenHouseId
+                    );
+                    const isShortlisted = Boolean(house.isShortlisted);
                     const isFavorite = house.id === favoriteHouseId && ratingSummary.average > 0;
                     const isOwnerOrAdmin = canModifyRecord(house.ownerId);
                     return (
                       <div
                         key={house.id}
-                        className="p-4 hover:bg-slate-50 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                        className={`p-4 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                          isChosen
+                            ? 'bg-amber-50/90 hover:bg-amber-100/70'
+                            : isShortlisted
+                            ? 'bg-indigo-50/40 hover:bg-indigo-50/80'
+                            : 'hover:bg-slate-50'
+                        }`}
                       >
                         <div className="min-w-0 space-y-1">
-                          <div className="flex items-center gap-2">
-                            {isFavorite && (
+                          <div className="flex flex-wrap items-center gap-2">
+                            {isChosen ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-gradient-to-r from-amber-500 to-orange-600 text-white text-[11px] font-extrabold shrink-0">
+                                <Trophy className="w-3 h-3" />
+                                GEKOZEN HUISJE
+                              </span>
+                            ) : activeGroupRecord.chosenHouseId ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-200 text-slate-700 text-[10px] font-bold shrink-0">
+                                Backup
+                              </span>
+                            ) : null}
+                            {isShortlisted ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-600 text-white text-[10px] font-extrabold shrink-0">
+                                <ListChecks className="w-3 h-3" />
+                                SHORT LIST
+                              </span>
+                            ) : shortlistedHousesCount > 0 && !isChosen ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-500 text-[10px] font-semibold shrink-0">
+                                Long List
+                              </span>
+                            ) : null}
+                            {isFavorite && !isChosen && (
                               <span className="text-amber-600 text-xs font-bold shrink-0">★ Favoriet</span>
                             )}
                             <h4 className="text-sm font-bold text-slate-900 truncate">
@@ -3321,6 +3640,32 @@ function MainApplication() {
                             <div className="text-sm font-bold text-[#FC4C02]">€{pricePerPerson} p.p.</div>
                             <div className="text-[11px] text-slate-500">€{house.totalPrice} tot.</div>
                           </div>
+
+                          {isVerifiedMember && !isChosen && (
+                            <button
+                              type="button"
+                              onClick={() => handleToggleShortlist(house)}
+                              className={`min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
+                                isShortlisted
+                                  ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                                  : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200'
+                              }`}
+                            >
+                              <ListChecks className="w-3.5 h-3.5" />
+                              {isShortlisted ? 'Op Short List ✓' : '+ Short List'}
+                            </button>
+                          )}
+
+                          {isVerifiedMember && !isChosen && (
+                            <button
+                              type="button"
+                              onClick={() => setReviewingHouse(house)}
+                              className="min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold cursor-pointer"
+                            >
+                              <Trophy className="w-3.5 h-3.5 text-amber-600" />
+                              Kies dit huisje
+                            </button>
+                          )}
 
                           <button
                             type="button"
@@ -3356,9 +3701,52 @@ function MainApplication() {
                 </div>
               </div>
             ) : (
-              /* DETAILED HOUSE CARDS */
+              /* DETAILED HOUSE CARDS (with Chosen House pinned on top, optional Short List / Long List split, and collapsible Backup / Long List Houses) */
               <div className="space-y-4">
-                {displayedHouses.map((house) => {
+                {displayedHouses.map((house, index) => {
+                  const hasChosenHouseInList = Boolean(
+                    activeGroupRecord.chosenHouseId &&
+                      displayedHouses.some((h) => h.id === activeGroupRecord.chosenHouseId)
+                  );
+                  const isChosenHouse =
+                    Boolean(activeGroupRecord.chosenHouseId) &&
+                    house.id === activeGroupRecord.chosenHouseId;
+                  const isBackupHouse = hasChosenHouseInList && !isChosenHouse;
+                  const isFirstBackupHouse =
+                    isBackupHouse &&
+                    (index === 1 ||
+                      (index > 0 &&
+                        displayedHouses[index - 1].id === activeGroupRecord.chosenHouseId));
+                  const isBackupExpanded = Boolean(expandedBackupHouses[house.id]);
+                  const backupHousesCount = hasChosenHouseInList
+                    ? displayedHouses.filter((h) => h.id !== activeGroupRecord.chosenHouseId).length
+                    : 0;
+                  const allBackupsExpanded =
+                    backupHousesCount > 0 &&
+                    displayedHouses
+                      .filter((h) => h.id !== activeGroupRecord.chosenHouseId)
+                      .every((h) => expandedBackupHouses[h.id]);
+
+                  // Optional Short List / Long List logic (active when at least 1 house in the group is marked as Short List and no final house is chosen yet)
+                  const isShortlisted = Boolean(house.isShortlisted);
+                  const groupUsesShortlist = !hasChosenHouseInList && shortlistedHousesCount > 0;
+                  const isShortlistSectionStart =
+                    groupUsesShortlist &&
+                    isShortlisted &&
+                    (index === 0 || !displayedHouses[index - 1].isShortlisted);
+                  const isLongListHouse = groupUsesShortlist && !isShortlisted;
+                  const isFirstLongListHouse =
+                    isLongListHouse &&
+                    (index === 0 || Boolean(displayedHouses[index - 1].isShortlisted));
+                  const isLongListExpanded = Boolean(expandedLongListHouses[house.id]);
+                  const longListHousesInView = groupUsesShortlist
+                    ? displayedHouses.filter((h) => !h.isShortlisted)
+                    : [];
+                  const longListHousesCount = longListHousesInView.length;
+                  const allLongListExpanded =
+                    longListHousesCount > 0 &&
+                    longListHousesInView.every((h) => expandedLongListHouses[h.id]);
+
                   const ratingSummary = getHouseRatingSummary(house);
                   const isFavorite = house.id === favoriteHouseId && ratingSummary.average > 0;
                   const isSelected = house.id === selectedHouseId;
@@ -3374,43 +3762,418 @@ function MainApplication() {
                     : undefined;
 
                   return (
-                    <article
-                      key={house.id}
-                      data-testid={`house-card-${house.id}`}
-                      className={`group bg-white rounded-xl border transition-colors overflow-hidden ${
-                        isSelected
-                          ? 'border-[#FC4C02] ring-2 ring-[#FC4C02]/20'
-                          : isFavorite
-                          ? 'border-amber-400'
-                          : 'border-slate-200 hover:border-slate-300'
-                      }`}
-                    >
-                      {/* Top Chosen House OR Groepsfavoriet banner */}
-                      {activeGroupRecord.chosenHouseId === house.id ? (
-                        <div className="bg-gradient-to-r from-amber-500 to-orange-600 text-white px-4 py-2 flex items-center justify-between gap-2 text-xs">
-                          <span className="font-extrabold flex items-center gap-1.5">
-                            <Trophy className="w-4 h-4 text-white shrink-0" />
-                            <span>
-                              HET GEWORDEN HUISJE VAN {activeGroupRecord.name.toUpperCase()} 🏆 — Gedeeld in Centrale Repository
-                            </span>
-                          </span>
-                          <span className="font-mono-num font-bold text-amber-100 shrink-0">
-                            {ratingSummary.formattedLabel}
-                          </span>
+                    <React.Fragment key={house.id}>
+                      {/* Section Header above the Short List when the group uses Short List / Long List */}
+                      {isShortlistSectionStart && (
+                        <div className="bg-indigo-950 text-white border border-indigo-800 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-xs">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-2 text-xs sm:text-sm font-extrabold uppercase tracking-wide text-indigo-200">
+                              <ListChecks className="w-4 h-4 text-indigo-400 shrink-0" />
+                              <span>
+                                Short List van {activeGroupRecord.name} ({shortlistedHousesCount})
+                              </span>
+                            </div>
+                            <p className="text-xs text-indigo-200/90">
+                              Jullie favoriete kanshebbers met direct alle detailinformatie, prijzen en stemmen zichtbaar.
+                            </p>
+                          </div>
                         </div>
-                      ) : isFavorite ? (
-                        <div className="bg-amber-500/10 border-b border-amber-300/60 px-4 py-2 flex items-center justify-between gap-2 text-xs">
-                          <span className="font-bold text-amber-900 flex items-center gap-1.5">
-                            <Trophy className="w-4 h-4 text-amber-600 shrink-0" />
-                            <span>Groepsfavoriet 🏆 — Hoogste gemiddelde</span>
-                          </span>
-                          <span className="font-mono-num font-semibold text-amber-800 shrink-0">
-                            {ratingSummary.formattedLabel}
-                          </span>
-                        </div>
-                      ) : null}
+                      )}
 
-                      <div className="grid grid-cols-1 md:grid-cols-12">
+                      {/* Section Divider right above the first Long List House when the group uses a Short List */}
+                      {isFirstLongListHouse && (
+                        <div className="pt-3 pb-1">
+                          <div className="bg-slate-200/80 border border-slate-300 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-2 text-xs font-extrabold text-slate-800 uppercase tracking-wide">
+                                <span>Long List — Overige huisjes ({longListHousesCount})</span>
+                              </div>
+                              <p className="text-xs text-slate-600">
+                                Compact ingeklapt voor overzicht. Klik op een huisje om de details open te klappen of zet het met één klik op de Short List.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextState: Record<string, boolean> = {};
+                                longListHousesInView.forEach((h) => {
+                                  nextState[h.id] = !allLongListExpanded;
+                                });
+                                setExpandedLongListHouses(nextState);
+                              }}
+                              className="min-h-[34px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-xs font-bold text-slate-700 cursor-pointer shrink-0"
+                            >
+                              {allLongListExpanded ? (
+                                <>
+                                  <ChevronUp className="w-3.5 h-3.5" />
+                                  <span>Long List inklappen</span>
+                                </>
+                              ) : (
+                                <>
+                                  <ChevronDown className="w-3.5 h-3.5" />
+                                  <span>Long List uitklappen</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Section Divider right above the first Backup House when a house has been chosen */}
+                      {isFirstBackupHouse && (
+                        <div className="pt-3 pb-1">
+                          <div className="bg-slate-200/80 border border-slate-300 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-2 text-xs font-extrabold text-slate-800 uppercase tracking-wide">
+                                <span>Overige huisjes als backup ({backupHousesCount})</span>
+                              </div>
+                              <p className="text-xs text-slate-600">
+                                Ingeklapt bewaard als reserve. Klik op een huisje om alle details te bekijken of alsnog een ander huisje als gekozen huisje in te stellen.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextState: Record<string, boolean> = {};
+                                displayedHouses.forEach((h) => {
+                                  if (h.id !== activeGroupRecord.chosenHouseId) {
+                                    nextState[h.id] = !allBackupsExpanded;
+                                  }
+                                });
+                                setExpandedBackupHouses(nextState);
+                              }}
+                              className="min-h-[34px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-slate-50 border border-slate-300 text-xs font-bold text-slate-700 cursor-pointer shrink-0"
+                            >
+                              {allBackupsExpanded ? (
+                                <>
+                                  <ChevronUp className="w-3.5 h-3.5" />
+                                  <span>Alle backups inklappen</span>
+                                </>
+                              ) : (
+                                <>
+                                  <ChevronDown className="w-3.5 h-3.5" />
+                                  <span>Alle backups uitklappen</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* COLLAPSED LONG LIST HOUSE ROW (minimal info visible, click to expand details or promote to Short List) */}
+                      {isLongListHouse && !isLongListExpanded ? (
+                        <article
+                          data-testid={`house-card-longlist-collapsed-${house.id}`}
+                          className={`bg-white rounded-xl border transition-all overflow-hidden ${
+                            isSelected
+                              ? 'border-[#FC4C02] ring-2 ring-[#FC4C02]/20'
+                              : 'border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="p-3 sm:px-4 sm:py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                            {/* Left Minimal Info Area (Click to open details) */}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedLongListHouses((prev) => ({
+                                  ...prev,
+                                  [house.id]: true,
+                                }))
+                              }
+                              className="flex-1 min-w-0 text-left flex items-center gap-2.5 cursor-pointer group"
+                            >
+                              <div className="w-7 h-7 rounded-lg bg-slate-100 group-hover:bg-indigo-50 border border-slate-200 flex items-center justify-center shrink-0">
+                                <ChevronDown className="w-4 h-4 text-slate-500 group-hover:text-indigo-600" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-500 text-[10px] font-semibold uppercase shrink-0">
+                                    Long List
+                                  </span>
+                                  <h3 className="text-sm font-bold text-slate-800 group-hover:text-indigo-700 transition-colors truncate">
+                                    {house.title}
+                                  </h3>
+                                  <span className="text-xs text-slate-400 truncate hidden md:inline">
+                                    · {house.locationName}
+                                  </span>
+                                </div>
+                              </div>
+                            </button>
+
+                            {/* Right Minimal Price + Promote to Short List + Expand Button */}
+                            <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 shrink-0">
+                              <span className="text-xs font-mono-num font-bold text-slate-700 mr-1">
+                                €{pricePerPerson} p.p.
+                              </span>
+
+                              {isVerifiedMember && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleShortlist(house)}
+                                  title="Zet dit huisje op de Short List zodat alle details direct zichtbaar zijn"
+                                  className="min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-bold cursor-pointer"
+                                >
+                                  <ListChecks className="w-3.5 h-3.5 text-indigo-600" />
+                                  <span>+ Zet op Short List</span>
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedLongListHouses((prev) => ({
+                                    ...prev,
+                                    [house.id]: true,
+                                  }))
+                                }
+                                className="min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold cursor-pointer"
+                              >
+                                <span>Openklappen</span>
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </article>
+                      ) : isBackupHouse && !isBackupExpanded ? (
+                        <article
+                          data-testid={`house-card-collapsed-${house.id}`}
+                          className={`bg-white rounded-xl border transition-all overflow-hidden ${
+                            isSelected
+                              ? 'border-[#FC4C02] ring-2 ring-[#FC4C02]/20'
+                              : 'border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="p-3.5 sm:px-5 sm:py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            {/* Left Clickable Info Area to Expand */}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedBackupHouses((prev) => ({
+                                  ...prev,
+                                  [house.id]: true,
+                                }))
+                              }
+                              className="flex-1 min-w-0 text-left flex items-start sm:items-center gap-3 cursor-pointer group"
+                            >
+                              <div className="w-8 h-8 rounded-lg bg-slate-100 group-hover:bg-orange-50 border border-slate-200 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
+                                <ChevronDown className="w-4 h-4 text-slate-600 group-hover:text-[#FC4C02]" />
+                              </div>
+                              <div className="min-w-0 flex-1 space-y-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-600 text-[10px] font-bold uppercase">
+                                    Backup-optie
+                                  </span>
+                                  {isShortlisted && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200 text-indigo-700 text-[10px] font-bold uppercase">
+                                      Short List
+                                    </span>
+                                  )}
+                                  {isFavorite && (
+                                    <span className="text-amber-600 text-[11px] font-bold">
+                                      ★ Hoogst beoordeeld ({ratingSummary.formattedLabel})
+                                    </span>
+                                  )}
+                                  <h3 className="text-sm sm:text-base font-bold text-slate-900 group-hover:text-[#FC4C02] transition-colors truncate">
+                                    {house.title}
+                                  </h3>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-slate-500">
+                                  <span className="font-medium text-slate-700">{house.locationName}</span>
+                                  <span>·</span>
+                                  <span>
+                                    {house.bedrooms} slpk / {house.bathrooms} badk
+                                  </span>
+                                  <span>·</span>
+                                  <span className="font-mono-num font-semibold text-slate-700">
+                                    {ratingSummary.formattedLabel}
+                                  </span>
+                                  <span>·</span>
+                                  <span>Door {house.addedBy}</span>
+                                  {commentsList.length > 0 && (
+                                    <>
+                                      <span>·</span>
+                                      <span>{commentsList.length} reactie(s)</span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </button>
+
+                            {/* Right Price & Quick Actions (Expand details or Switch Chosen House) */}
+                            <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100 shrink-0">
+                              <div className="text-left sm:text-right font-mono-num mr-2">
+                                <div className="text-sm font-bold text-[#FC4C02]">
+                                  €{pricePerPerson} p.p.
+                                </div>
+                                <div className="text-[11px] text-slate-500">
+                                  €{house.totalPrice} totaal
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => handleShowOnMap(house.id)}
+                                className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold cursor-pointer"
+                              >
+                                <MapPin className="w-3.5 h-3.5 text-[#FC4C02]" />
+                                <span className="hidden xl:inline">Op kaart</span>
+                              </button>
+
+                              {isVerifiedMember && (
+                                <button
+                                  type="button"
+                                  onClick={() => setReviewingHouse(house)}
+                                  title="Wijzig de groepskeuze en maak dit huisje alsnog het gekozen huisje"
+                                  className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold cursor-pointer"
+                                >
+                                  <Trophy className="w-3.5 h-3.5 text-amber-600" />
+                                  <span>Kies alsnog dit huisje</span>
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedBackupHouses((prev) => ({
+                                    ...prev,
+                                    [house.id]: true,
+                                  }))
+                                }
+                                className="min-h-[34px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer"
+                              >
+                                <span>Details uitklappen</span>
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </article>
+                      ) : (
+                        <article
+                          data-testid={`house-card-${house.id}`}
+                          className={`group bg-white rounded-xl border transition-colors overflow-hidden ${
+                            isChosenHouse
+                              ? 'border-amber-500 ring-2 ring-amber-500/30 shadow-md'
+                              : isSelected
+                              ? 'border-[#FC4C02] ring-2 ring-[#FC4C02]/20'
+                              : isShortlisted
+                              ? 'border-indigo-500 ring-1 ring-indigo-500/20 shadow-xs'
+                              : isFavorite
+                              ? 'border-amber-400'
+                              : 'border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          {/* Top Chosen House OR Expanded Backup OR Short List OR Expanded Long List OR Groepsfavoriet banner */}
+                          {isChosenHouse ? (
+                            <div className="bg-gradient-to-r from-amber-500 via-orange-600 to-amber-600 text-white px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                              <span className="font-extrabold flex items-center gap-2 text-xs sm:text-sm">
+                                <Trophy className="w-4 h-4 text-white shrink-0" />
+                                <span>
+                                  HÉT GEKOZEN HUISJE VAN {activeGroupRecord.name.toUpperCase()} 🏆 — Altijd bovenaan & gedeeld in Centrale Repository
+                                </span>
+                              </span>
+                              <span className="font-mono-num font-bold text-amber-100 shrink-0">
+                                {ratingSummary.formattedLabel}
+                              </span>
+                            </div>
+                          ) : isBackupHouse ? (
+                            <div className="bg-slate-100 border-b border-slate-200 px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                              <span className="font-bold text-slate-700 flex items-center gap-1.5">
+                                <span>Backup-huisje (uitgeklapt) — Je kunt dit huisje nog steeds bekijken of alsnog kiezen</span>
+                              </span>
+                              <div className="flex items-center gap-2">
+                                {isVerifiedMember && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setReviewingHouse(house)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-500 hover:bg-amber-600 text-white font-bold cursor-pointer"
+                                  >
+                                    <Trophy className="w-3 h-3" />
+                                    <span>Maak dit alsnog het gekozen huisje</span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedBackupHouses((prev) => ({
+                                      ...prev,
+                                      [house.id]: false,
+                                    }))
+                                  }
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white hover:bg-slate-200 border border-slate-300 text-slate-700 font-semibold cursor-pointer"
+                                >
+                                  <span>Inklappen</span>
+                                  <ChevronUp className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          ) : isShortlisted ? (
+                            <div className="bg-indigo-600 text-white px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                              <span className="font-extrabold flex items-center gap-1.5">
+                                <ListChecks className="w-4 h-4 text-indigo-200 shrink-0" />
+                                <span>
+                                  SHORT LIST KANSHEBBER ★
+                                  {isFavorite ? ' · Tevens Groepsfavoriet 🏆' : ''}
+                                </span>
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono-num font-bold text-indigo-100">
+                                  {ratingSummary.formattedLabel}
+                                </span>
+                                {isVerifiedMember && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleShortlist(house)}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-800/80 hover:bg-indigo-900 text-indigo-100 text-[11px] font-semibold cursor-pointer"
+                                  >
+                                    <span>Verplaats naar Long List</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ) : isLongListHouse ? (
+                            <div className="bg-slate-100 border-b border-slate-200 px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                              <span className="font-bold text-slate-700 flex items-center gap-1.5">
+                                <span>Long List-huisje (uitgeklapt)</span>
+                              </span>
+                              <div className="flex items-center gap-2">
+                                {isVerifiedMember && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleShortlist(house)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white font-bold cursor-pointer"
+                                  >
+                                    <ListChecks className="w-3 h-3" />
+                                    <span>+ Zet op Short List</span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedLongListHouses((prev) => ({
+                                      ...prev,
+                                      [house.id]: false,
+                                    }))
+                                  }
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white hover:bg-slate-200 border border-slate-300 text-slate-700 font-semibold cursor-pointer"
+                                >
+                                  <span>Inklappen</span>
+                                  <ChevronUp className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          ) : isFavorite ? (
+                            <div className="bg-amber-500/10 border-b border-amber-300/60 px-4 py-2 flex items-center justify-between gap-2 text-xs">
+                              <span className="font-bold text-amber-900 flex items-center gap-1.5">
+                                <Trophy className="w-4 h-4 text-amber-600 shrink-0" />
+                                <span>Groepsfavoriet 🏆 — Hoogste gemiddelde</span>
+                              </span>
+                              <span className="font-mono-num font-semibold text-amber-800 shrink-0">
+                                {ratingSummary.formattedLabel}
+                              </span>
+                            </div>
+                          ) : null}
+
+                          <div className="grid grid-cols-1 md:grid-cols-12">
                         {/* Left Visual Column */}
                         <div className="md:col-span-5 relative">
                           <HouseIllustration
@@ -3560,6 +4323,28 @@ function MainApplication() {
                                 Toon op kaart
                               </button>
 
+                              {isVerifiedMember && !isChosenHouse && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleShortlist(house)}
+                                  title={
+                                    isShortlisted
+                                      ? 'Verwijder van de Short List (terug naar Long List)'
+                                      : 'Zet dit huisje op de Short List van jullie groep'
+                                  }
+                                  className={`min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                                    isShortlisted
+                                      ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                                      : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200'
+                                  }`}
+                                >
+                                  <ListChecks className="w-3.5 h-3.5" />
+                                  <span>
+                                    {isShortlisted ? 'Op Short List ✓' : '+ Zet op Short List'}
+                                  </span>
+                                </button>
+                              )}
+
                               {isVerifiedMember && (
                                 <button
                                   type="button"
@@ -3573,6 +4358,8 @@ function MainApplication() {
                                   <Trophy className="w-3.5 h-3.5" />
                                   {activeGroupRecord.chosenHouseId === house.id
                                     ? 'Gekozen huisje & Review bewerken'
+                                    : activeGroupRecord.chosenHouseId
+                                    ? 'Kies alsnog dit huisje & Review'
                                     : 'Dit huisje is het geworden & Review'}
                                 </button>
                               )}
@@ -3770,7 +4557,9 @@ function MainApplication() {
                           )}
                         </div>
                       )}
-                    </article>
+                        </article>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </div>
@@ -3882,8 +4671,13 @@ function MainApplication() {
                       return (
                         <tr key={house.id} className="hover:bg-slate-50 transition-colors">
                           <td className="py-3.5 px-4">
-                            <div className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
+                            <div className="font-bold text-slate-900 text-sm flex flex-wrap items-center gap-1.5">
                               {isFav && <span className="text-amber-500">★</span>}
+                              {house.isShortlisted && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-extrabold uppercase">
+                                  Short List
+                                </span>
+                              )}
                               <span>{house.title}</span>
                             </div>
                             <div className="text-slate-500 mt-0.5 flex items-center gap-2">
@@ -3919,6 +4713,20 @@ function MainApplication() {
                           </td>
                           <td className="py-3.5 px-4 text-right whitespace-nowrap">
                             <div className="inline-flex items-center justify-end gap-1.5">
+                              {isVerifiedMember && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleShortlist(house)}
+                                  className={`min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg font-bold cursor-pointer ${
+                                    house.isShortlisted
+                                      ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                                      : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200'
+                                  }`}
+                                >
+                                  <ListChecks className="w-3.5 h-3.5" />
+                                  {house.isShortlisted ? 'Short List ✓' : '+ Short List'}
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => handleShowOnMap(house.id)}
@@ -4607,11 +5415,12 @@ function MainApplication() {
         </main>
       )}
 
-      {/* VIEW 5: Centrale Repository van Gekozen & Beoordeelde Huisjes */}
+      {/* VIEW 5: Centrale Repository van Alle Gevonden & Uitverkozen Huisjes */}
       {activeView === 'repository' && (
         <main className="flex-1 max-w-[1280px] w-full mx-auto px-3 sm:px-6 py-6">
           <RepositoryView
-            repositoryHouses={cloudRepositoryHouses}
+            repositoryHouses={combinedRepositoryHouses}
+            allGroups={allGroupsWithDefault}
             activeGroupHouses={activeHouses}
             activeGroupId={activeTripId}
             activeGroupName={activeGroupRecord.name}

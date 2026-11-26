@@ -165,7 +165,7 @@ service cloud.firestore {
       data.keys().hasOnly([
         'tripId', 'ownerId', 'title', 'url', 'photoUrl', 'locationName',
         'lat', 'lng', 'totalPrice', 'bedrooms', 'bathrooms',
-        'hasBbq', 'hasFireplace', 'hasJacuzzi', 'hasSauna',
+        'hasBbq', 'hasFireplace', 'hasJacuzzi', 'hasSauna', 'isShortlisted',
         'routeUrl', 'notes', 'addedBy', 'voteScore', 'voteCount',
         'status', 'createdAt', 'updatedAt'
       ]) &&
@@ -184,6 +184,7 @@ service cloud.firestore {
       data.hasFireplace is bool &&
       data.hasJacuzzi is bool &&
       data.hasSauna is bool &&
+      (!('isShortlisted' in data) || data.isShortlisted is bool) &&
       data.routeUrl is string && data.routeUrl.size() <= 2000 &&
       data.notes is string && data.notes.size() <= 1000 &&
       data.addedBy is string && data.addedBy.size() >= 1 && data.addedBy.size() <= 60 &&
@@ -417,7 +418,7 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly([
               'title', 'url', 'photoUrl', 'locationName', 'lat', 'lng',
               'totalPrice', 'bedrooms', 'bathrooms', 'hasBbq',
-              'hasFireplace', 'hasJacuzzi', 'hasSauna', 'routeUrl',
+              'hasFireplace', 'hasJacuzzi', 'hasSauna', 'isShortlisted', 'routeUrl',
               'notes', 'addedBy', 'status', 'updatedAt'
             ])
           ) ||
@@ -426,6 +427,11 @@ service cloud.firestore {
             existing().status == 'active' &&
             incoming().diff(existing()).affectedKeys().hasOnly(['voteScore', 'voteCount', 'updatedAt']) &&
             existsAfter(/databases/$(database)/documents/houses/$(houseId)/votes/$(request.auth.uid))
+          ) ||
+          // Action 3: Any verified group member toggles whether a house is on the group's Short List
+          (
+            existing().status == 'active' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['isShortlisted', 'updatedAt'])
           )
         );
 

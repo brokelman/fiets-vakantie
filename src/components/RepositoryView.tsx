@@ -16,12 +16,20 @@ import {
   Route,
   Users,
   Sparkles,
+  Bookmark,
 } from 'lucide-react';
-import { FacilityFilter, HouseRecord, RepoSortOption, RepositoryHouseRecord } from '../types';
+import {
+  FacilityFilter,
+  GroupRecord,
+  HouseRecord,
+  RepoSortOption,
+  RepositoryHouseRecord,
+} from '../types';
 import { HouseIllustration } from './HouseIllustration';
 
 interface RepositoryViewProps {
   repositoryHouses: RepositoryHouseRecord[];
+  allGroups: GroupRecord[];
   activeGroupHouses: HouseRecord[];
   activeGroupId: string;
   activeGroupName: string;
@@ -33,6 +41,7 @@ interface RepositoryViewProps {
 
 export const RepositoryView: React.FC<RepositoryViewProps> = ({
   repositoryHouses,
+  allGroups,
   activeGroupHouses,
   activeGroupName,
   cyclistCount,
@@ -42,12 +51,30 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
 }) => {
   const [repoSortBy, setRepoSortBy] = useState<RepoSortOption>('rating_desc');
   const [facilityFilter, setFacilityFilter] = useState<FacilityFilter>('alle');
+  const [chosenFilter, setChosenFilter] = useState<'alle' | 'alleen_uitverkozen'>('alle');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [addingId, setAddingId] = useState<string | null>(null);
+
+  // Determine whether a repository house is currently the chosen winner of its source group
+  const isHouseChosenByGroup = (item: RepositoryHouseRecord): boolean => {
+    const groupObj = allGroups.find(
+      (g) => g.tripId === item.sourceGroupId || g.id === item.sourceGroupId
+    );
+    if (groupObj && groupObj.chosenHouseId) {
+      return groupObj.chosenHouseId === item.sourceHouseId;
+    }
+    return Boolean(item.isChosen);
+  };
+
+  const chosenCount = useMemo(() => {
+    return repositoryHouses.filter((item) => isHouseChosenByGroup(item)).length;
+  }, [repositoryHouses, allGroups]);
 
   const filteredAndSortedRepoHouses = useMemo(() => {
     return repositoryHouses
       .filter((item) => {
+        const isChosen = isHouseChosenByGroup(item);
+        if (chosenFilter === 'alleen_uitverkozen' && !isChosen) return false;
         if (facilityFilter === 'bbq' && !item.hasBbq) return false;
         if (facilityFilter === 'openhaard' && !item.hasFireplace) return false;
         if (facilityFilter === 'jacuzzi' && !item.hasJacuzzi) return false;
@@ -65,7 +92,11 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
         return true;
       })
       .sort((a, b) => {
+        const chosenA = isHouseChosenByGroup(a) ? 1 : 0;
+        const chosenB = isHouseChosenByGroup(b) ? 1 : 0;
+
         if (repoSortBy === 'rating_desc') {
+          if (chosenB !== chosenA) return chosenB - chosenA;
           if (b.ratingStars !== a.ratingStars) return b.ratingStars - a.ratingStars;
           return a.totalPrice - b.totalPrice;
         }
@@ -82,7 +113,7 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
         // 'nieuwste'
         return (b.updatedAt || '').localeCompare(a.updatedAt || '');
       });
-  }, [repositoryHouses, repoSortBy, facilityFilter, searchQuery]);
+  }, [repositoryHouses, allGroups, repoSortBy, facilityFilter, chosenFilter, searchQuery]);
 
   const isAlreadyInActiveGroup = (repoHouse: RepositoryHouseRecord): boolean => {
     return activeGroupHouses.some(
@@ -114,27 +145,39 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
           <div className="space-y-2 max-w-2xl">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-400/30 text-amber-300 text-xs font-extrabold uppercase tracking-wider">
               <Trophy className="w-3.5 h-3.5" />
-              Gedeelde Ervaringen van Alle Fietsgroepen
+              Alle Gevonden & Uitverkozen Huisjes van Alle Fietsgroepen
             </div>
             <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-              Centrale Repository van Gekozen Huisjes
+              Centrale Huisjes-Repository ({repositoryHouses.length})
             </h2>
             <p className="text-sm text-slate-300 leading-relaxed">
-              Hier staan alle vakantiehuizen die door de verschillende groepen daadwerkelijk zijn gekozen en beoordeeld met sterren en een review. Blader door de bewezen toppers en voeg een huisje met één klik toe aan de lijst van{' '}
+              Hier staan <strong>alle bij elkaar gezochte vakantiehuizen van alle groepen</strong> verzameld. Huisjes die door een groep daadwerkelijk zijn gekozen hebben de gouden indicator{' '}
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/30 text-amber-200 font-bold text-xs">
+                🏆 Uitverkozen door groep
+              </span>
+              . Voeg elk huisje met één klik toe aan de lijst van{' '}
               <strong className="text-white">{activeGroupName}</strong>.
             </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 shrink-0">
-            <div className="bg-white/10 backdrop-blur-sm border border-white/10 rounded-2xl px-4 py-3 text-center">
-              <span className="text-2xl font-extrabold text-amber-400 block">
+          <div className="grid grid-cols-3 gap-2.5 shrink-0">
+            <div className="bg-white/10 backdrop-blur-sm border border-white/10 rounded-2xl px-3.5 py-3 text-center">
+              <span className="text-2xl font-extrabold text-white block">
                 {repositoryHouses.length}
               </span>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
-                Beoordeelde huisjes
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-300">
+                Totaal in repo
               </span>
             </div>
-            <div className="bg-white/10 backdrop-blur-sm border border-white/10 rounded-2xl px-4 py-3 text-center">
+            <div className="bg-amber-500/20 backdrop-blur-sm border border-amber-400/30 rounded-2xl px-3.5 py-3 text-center">
+              <span className="text-2xl font-extrabold text-amber-300 block">
+                {chosenCount}
+              </span>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-200">
+                🏆 Uitverkozen
+              </span>
+            </div>
+            <div className="bg-white/10 backdrop-blur-sm border border-white/10 rounded-2xl px-3.5 py-3 text-center">
               <span className="text-2xl font-extrabold text-emerald-400 block">
                 {repositoryHouses.length > 0
                   ? (
@@ -144,8 +187,8 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
                   : '—'}{' '}
                 ★
               </span>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
-                Gem. groepsscore
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-300">
+                Gem. score
               </span>
             </div>
           </div>
@@ -167,17 +210,43 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-bold text-slate-500">Sorteer repository op:</span>
+            {/* Chosen vs All Filter */}
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setChosenFilter('alle')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition cursor-pointer ${
+                  chosenFilter === 'alle'
+                    ? 'bg-white text-slate-900 shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Alle huisjes ({repositoryHouses.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setChosenFilter('alleen_uitverkozen')}
+                className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-extrabold transition cursor-pointer ${
+                  chosenFilter === 'alleen_uitverkozen'
+                    ? 'bg-amber-500 text-white shadow-2xs'
+                    : 'text-amber-800 hover:text-amber-950'
+                }`}
+              >
+                <Trophy className="w-3.5 h-3.5" />
+                Alleen uitverkozen ({chosenCount})
+              </button>
+            </div>
+
             <select
               value={repoSortBy}
               onChange={(e) => setRepoSortBy(e.target.value as RepoSortOption)}
               className="text-xs font-bold bg-slate-100 text-slate-800 border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500 cursor-pointer"
             >
-              <option value="rating_desc">Hoogste sterrenbeoordeling (★ 5 → 1)</option>
+              <option value="rating_desc">Uitverkozen & hoogste sterren eerst (★ 5 → 1)</option>
               <option value="prijs_oplopend">Prijs: laag naar hoog (€)</option>
               <option value="prijs_aflopend">Prijs: hoog naar laag (€)</option>
               <option value="slaapkamers_desc">Meeste slaapkamers</option>
-              <option value="nieuwste">Nieuwste groepsreviews eerst</option>
+              <option value="nieuwste">Nieuwste toevoegingen eerst</option>
             </select>
           </div>
         </div>
@@ -185,7 +254,7 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
           <span className="text-xs font-semibold text-slate-400 mr-1 shrink-0">Faciliteiten:</span>
           {[
-            { id: 'alle', label: 'Alle gekozen huisjes' },
+            { id: 'alle', label: 'Alle faciliteiten' },
             { id: 'bbq', label: 'BBQ plaats' },
             { id: 'openhaard', label: 'Open haard' },
             { id: 'jacuzzi', label: 'Jacuzzi' },
@@ -215,26 +284,44 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
           </div>
           <h3 className="text-lg font-extrabold text-slate-900">
             {repositoryHouses.length === 0
-              ? 'Nog geen gekozen huisjes in de Centrale Repository'
+              ? 'Nog geen huisjes in de Centrale Repository'
               : 'Geen huisjes gevonden met deze filter'}
           </h3>
           <p className="text-sm text-slate-600 max-w-lg mx-auto">
             {repositoryHouses.length === 0
-              ? 'Zodra een groep bij een huisje op "Kies als winnaar & Review" klikt en een sterrenbeoordeling schrijft, verschijnt het huisje hier automatisch voor alle groepen.'
-              : 'Pas je zoekopdracht of faciliteitenfilter aan om alle beoordeelde groepshuisjes te zien.'}
+              ? 'Alle bij elkaar gezochte huisjes van alle groepen worden hier automatisch verzameld.'
+              : 'Pas je zoekopdracht of filter aan om alle verzamelde groepshuisjes te zien.'}
           </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {filteredAndSortedRepoHouses.map((repoHouse) => {
             const alreadyInGroup = isAlreadyInActiveGroup(repoHouse);
-            const perPersonWeekend = Math.round(repoHouse.totalPrice / cyclistCount);
+            const isChosenWinner = isHouseChosenByGroup(repoHouse);
+            const perPersonWeekend = Math.round(repoHouse.totalPrice / Math.max(1, cyclistCount));
 
             return (
               <div
                 key={repoHouse.id}
-                className="bg-white rounded-3xl border border-slate-200/90 shadow-xs hover:shadow-md transition overflow-hidden flex flex-col"
+                className={`bg-white rounded-3xl border transition overflow-hidden flex flex-col ${
+                  isChosenWinner
+                    ? 'border-2 border-amber-500 ring-2 ring-amber-400/20 shadow-md'
+                    : 'border-slate-200/90 shadow-xs hover:shadow-md'
+                }`}
               >
+                {/* Top Chosen Winner Ribbon if chosen by the group */}
+                {isChosenWinner && (
+                  <div className="bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 text-white px-4 py-2 text-xs font-extrabold flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Trophy className="w-4 h-4 text-white shrink-0" />
+                      <span>UITVERKOZEN DOOR {repoHouse.sourceGroupName.toUpperCase()} 🏆</span>
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full bg-white/20 text-[10px] uppercase tracking-wider">
+                      Winnend groepshuisje
+                    </span>
+                  </div>
+                )}
+
                 {/* Illustration / Photo Top */}
                 <div className="relative h-48 bg-slate-100 overflow-hidden">
                   <HouseIllustration
@@ -242,22 +329,30 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
                     title={repoHouse.title}
                     locationName={repoHouse.locationName}
                     photoUrl={repoHouse.photoUrl}
+                    isFavorite={isChosenWinner}
                     lat={repoHouse.lat}
                     lng={repoHouse.lng}
                   />
 
                   {/* Top Badges */}
                   <div className="absolute top-3 left-3 right-3 flex items-center justify-between gap-2">
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-slate-900/85 text-white backdrop-blur-md shadow-sm">
-                      <Trophy className="w-3.5 h-3.5 text-amber-400" />
-                      Gekozen door: {repoHouse.sourceGroupName}
-                    </span>
+                    {isChosenWinner ? (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold bg-amber-500 text-white shadow-sm">
+                        <Trophy className="w-3.5 h-3.5 text-white" />
+                        Uitverkozen door: {repoHouse.sourceGroupName}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-900/80 text-slate-100 backdrop-blur-md shadow-sm">
+                        <Bookmark className="w-3.5 h-3.5 text-orange-400" />
+                        Gevonden door: {repoHouse.sourceGroupName}
+                      </span>
+                    )}
 
-                    <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-extrabold bg-amber-500 text-white shadow-sm">
+                    <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-extrabold bg-slate-900/85 text-amber-400 backdrop-blur-md shadow-sm">
                       {Array.from({ length: repoHouse.ratingStars }).map((_, idx) => (
-                        <Star key={idx} className="w-3.5 h-3.5 fill-white text-white" />
+                        <Star key={idx} className="w-3.5 h-3.5 fill-amber-400 text-amber-400" />
                       ))}
-                      <span className="ml-1">{repoHouse.ratingStars}/5</span>
+                      <span className="ml-1 text-white">{repoHouse.ratingStars}/5</span>
                     </span>
                   </div>
 
@@ -329,14 +424,34 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
                       )}
                     </div>
 
-                    {/* Group Review Box */}
-                    <div className="bg-amber-50/70 border border-amber-200/80 rounded-2xl p-3.5 space-y-1.5">
+                    {/* Group Review or Proposal Context Box */}
+                    <div
+                      className={`rounded-2xl p-3.5 space-y-1.5 border ${
+                        isChosenWinner
+                          ? 'bg-amber-50/80 border-amber-300'
+                          : 'bg-slate-50 border-slate-200/80'
+                      }`}
+                    >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-extrabold uppercase tracking-wider text-amber-900 flex items-center gap-1">
-                          <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-                          Review van {repoHouse.sourceGroupName}
+                        <span
+                          className={`text-[11px] font-extrabold uppercase tracking-wider flex items-center gap-1 ${
+                            isChosenWinner ? 'text-amber-900' : 'text-slate-700'
+                          }`}
+                        >
+                          <Sparkles
+                            className={`w-3.5 h-3.5 ${
+                              isChosenWinner ? 'text-amber-600' : 'text-slate-500'
+                            }`}
+                          />
+                          {isChosenWinner
+                            ? `Uitverkozen door ${repoHouse.sourceGroupName}`
+                            : `Voorstel uit groepslijst ${repoHouse.sourceGroupName}`}
                         </span>
-                        <span className="text-[11px] font-semibold text-amber-800">
+                        <span
+                          className={`text-[11px] font-semibold ${
+                            isChosenWinner ? 'text-amber-800' : 'text-slate-500'
+                          }`}
+                        >
                           Door {repoHouse.reviewerName}
                         </span>
                       </div>
@@ -347,7 +462,8 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
 
                     {repoHouse.notes && (
                       <p className="text-xs text-slate-500 line-clamp-2">
-                        <strong className="text-slate-700">Klimmen & Omgeving:</strong> {repoHouse.notes}
+                        <strong className="text-slate-700">Klimmen & Omgeving:</strong>{' '}
+                        {repoHouse.notes}
                       </p>
                     )}
                   </div>
@@ -367,7 +483,7 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
                     ) : (
                       <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1">
                         <Users className="w-3.5 h-3.5" />
-                        Gedeeld in repository
+                        {isChosenWinner ? 'Uitverkozen huisje' : 'Kandidaat-huisje'}
                       </span>
                     )}
 
@@ -399,3 +515,4 @@ export const RepositoryView: React.FC<RepositoryViewProps> = ({
     </div>
   );
 };
+

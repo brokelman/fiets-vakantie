@@ -402,6 +402,10 @@
           "type": "boolean",
           "description": "Sauna aanwezig."
         },
+        "isShortlisted": {
+          "type": "boolean",
+          "description": "Of dit huisje op de Short List van de groep staat tijdens het selectieproces."
+        },
         "routeUrl": {
           "type": "string",
           "description": "Optionele link naar een Strava of Komoot route in de buurt.",

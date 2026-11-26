@@ -35,6 +35,7 @@ export interface RepositoryHouseRecord {
   sourceHouseId: string;
   sourceGroupId: string;
   sourceGroupName: string;
+  isChosen?: boolean;
   title: string;
   url: string;
   photoUrl: string;
@@ -94,6 +95,7 @@ export interface HouseRecord {
   hasFireplace: boolean;
   hasJacuzzi: boolean;
   hasSauna: boolean;
+  isShortlisted?: boolean;
   routeUrl: string;
   notes: string;
   addedBy: string;
